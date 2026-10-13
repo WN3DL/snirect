@@ -26,7 +26,7 @@
 | `snirect update --check` | 查 GitHub Releases 是否有新版本（不下载） |
 | `snirect update` | 下载、校验 SHA256、覆盖已安装二进制；已注册服务则重启；包管理器安装时拒绝自更新，提示走 pacman |
 
-证书固定的客户端（网银等）不信任用户 CA，用 PAC / 规则排除。
+证书固定的客户端（网银等）不信任用户 CA，用 PAC / 规则排除。uv / conda / Node / JVM 等自带证书库的工具怎么办，见 README「[CA 信任边界](../README.md#ca-信任边界)」。
 
 上游用 dae/clash 分流时，把 snirect 认识的域名导出去：
 

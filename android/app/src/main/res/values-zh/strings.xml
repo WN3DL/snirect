@@ -120,6 +120,21 @@
     <string name="action_disable_anyway">仍然禁用</string>
     <string name="action_cancel">取消</string>
 
+    <!-- 自动排除（证书固定应用） -->
+    <string name="group_auto_blacklist">自动排除</string>
+    <string name="setting_auto_blacklist">自动排除证书固定应用</string>
+    <string name="setting_auto_blacklist_desc">已开启。2 分钟内 3 次拒绝代理证书的应用将绕开 VPN 直连（生效时会重启 VPN）</string>
+    <string name="setting_auto_blacklist_off">已关闭。证书固定应用会持续连接失败，需手动排除</string>
+    <string name="auto_blacklist_enable_title">开启自动排除？</string>
+    <string name="auto_blacklist_enable_msg">应用若不信任代理证书（证书固定）而中断 TLS 连接，2 分钟内累计 3 次后将被移出 VPN 改为直连。应用排除需重启 VPN，全机网络会短暂中断。</string>
+    <string name="action_enable">开启</string>
+    <string name="auto_exclude_title">已自动排除的应用</string>
+    <string name="auto_exclude_apps_count">%1$d 个应用</string>
+    <string name="auto_exclude_clear_all">清空全部</string>
+    <string name="auto_exclude_empty_title">暂无自动排除的应用</string>
+    <string name="auto_exclude_empty_hint">反复拒绝代理证书的应用会出现在这里，并绕开 VPN 直连</string>
+    <string name="auto_exclude_removed">已移除 %1$s，该应用恢复被 VPN 代理</string>
+
     <!-- Setup Guide / Help Screen -->
     <string name="help_title">帮助与向导</string>
     <string name="step_export">导出</string>

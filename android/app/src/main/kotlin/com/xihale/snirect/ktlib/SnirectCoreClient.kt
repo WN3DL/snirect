@@ -341,6 +341,20 @@ internal object SnirectCoreBridge {
             onEngineEvent(EngineEvent.Stopped(reason))
             delegate.onEngineStopped(reason)
         }
+
+        override fun onCertRejected(payload: String?) {
+            if (payload != null) delegate.onCertRejected(payload)
+        }
+
+        override fun lookupUID(
+            srcIP: String?,
+            srcPort: Int,
+            dstIP: String?,
+            dstPort: Int
+        ): Int {
+            if (srcIP == null || dstIP == null) return 0
+            return delegate.lookupUID(srcIP, srcPort, dstIP, dstPort)
+        }
     }
 
     private fun SnirectEngineConfig.toCoreConfig(): CoreConfig = CoreConfig(

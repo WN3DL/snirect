@@ -42,6 +42,26 @@ type EngineCallbacks interface {
 	OnEngineStarted()
 	OnEngineError(reason string)
 	OnEngineStopped(reason string)
+	// OnCertRejected reports a client app that aborted the MITM handshake
+	// after our leaf certificate was delivered (certificate pinning).
+	// payload is a JSON object:
+	// {"uid":10123,"src":"10.0.0.1:38428","host":"20.205.243.168","err":"EOF"}.
+	// uid is the flow attribution (native netlink, or the host's
+	// getConnectionOwnerUid fallback — it only sees ESTABLISHED sockets, so it
+	// wins the race on some flows and misses others); src lets the host retry
+	// the resolution at rejection time, when the socket was certainly
+	// established. Unlike the lifecycle callbacks this is a per-connection
+	// telemetry event: it may fire many times, and it is NOT epoch-guarded —
+	// a rejection observed by a dying engine still happened and is still
+	// worth counting.
+	OnCertRejected(payload string)
+	// LookupUID resolves the owning uid of a TCP socket via
+	// ConnectivityManager.getConnectionOwnerUid (a system_server binder call
+	// that works even where the app's own netlink/proc access is
+	// SELinux-denied, e.g. EMUI 10). Returns 0 when unresolvable. Called at
+	// most once per captured :443 flow, only when the native netlink lookup
+	// came up empty.
+	LookupUID(srcIP string, srcPort int32, dstIP string, dstPort int32) int32
 }
 
 // engineParts bundles the resources a running engine owns. Ownership is
@@ -118,6 +138,38 @@ type closeableResolver interface {
 
 var appState = &app{}
 
+// hostLookup holds the current engine's LookupUID callback. Package-level
+// (like lastCb) because relay goroutines may outlive a structured hand-off;
+// a stale engine calling it after StopEngine is harmless (stateless lookup).
+var (
+	hostLookupMu sync.RWMutex
+	hostLookup   EngineCallbacks
+)
+
+func setHostLookup(cb EngineCallbacks) {
+	hostLookupMu.Lock()
+	hostLookup = cb
+	hostLookupMu.Unlock()
+}
+
+// hostUIDOfFlow resolves a flow's uid: native netlink first, the host's
+// getConnectionOwnerUid fallback second (it only sees ESTABLISHED sockets, so
+// the two complement each other). Both failing yields 0 (anonymous); the host
+// retries at certificate-rejection time via the X-Snirect-Src tuple.
+func hostUIDOfFlow(srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16) int {
+	if uid := uidOfTCPFlow(srcIP, srcPort, dstIP, dstPort); uid > 0 {
+		return uid
+	}
+	hostLookupMu.RLock()
+	cb := hostLookup
+	hostLookupMu.RUnlock()
+	if cb == nil {
+		return 0
+	}
+	defer func() { _ = recover() }() // a JVM exception must not kill the relay
+	return int(cb.LookupUID(srcIP.String(), int32(srcPort), dstIP.String(), int32(dstPort)))
+}
+
 // SetDataDir records where the CA cert/key live. Must be called before
 // StartEngine / GetCACertificate.
 func SetDataDir(path string) {
@@ -161,6 +213,7 @@ func StartEngine(fd int, configStr string, cb EngineCallbacks) {
 	cbMutex.Lock()
 	lastCb = cb
 	cbMutex.Unlock()
+	setHostLookup(cb)
 
 	// Synchronous phase: JSON parse only. A malformed config never spawns a
 	// goroutine; the caller learns via OnEngineError on the passed callback.
@@ -261,6 +314,11 @@ func runEngine(gen uint64, fd int, config Config, cb EngineCallbacks, superseded
 	//    the proxy's upstream traffic escapes the TUN.
 	srv := proxy.NewProxyServer(coreCfg, ruleSet, cm, resolver)
 	srv.SetOutboundDialer(bypassDialer)
+	// Cert-pinning telemetry: forward rejected clients to the host app, which
+	// owns the policy (strike counting, auto-exclusion, VPN restart).
+	srv.OnClientCertReject = func(uid int, src, host, reason string) {
+		cbCertRejected(cb, uid, src, host, reason)
+	}
 	if err := srv.Listen(); err != nil {
 		LogError("CORE: Proxy Listen Failed: %v", err)
 		fail(fmt.Sprintf("proxy listen failed: %v", err))
@@ -484,4 +542,27 @@ func cbStopped(cb EngineCallbacks, reason string) {
 	}
 	defer func() { _ = recover() }()
 	cb.OnEngineStopped(reason)
+}
+
+// certRejectPayload is the JSON shape of OnCertRejected.
+type certRejectPayload struct {
+	UID  int    `json:"uid"`
+	Src  string `json:"src"`
+	Host string `json:"host"`
+	Err  string `json:"err"`
+}
+
+// cbCertRejected wraps OnCertRejected with the same nil/recover discipline as
+// the lifecycle callbacks. Payload serialization failures (impossible for
+// these field types) degrade to an empty host rather than a panic.
+func cbCertRejected(cb EngineCallbacks, uid int, src, host, reason string) {
+	if cb == nil {
+		return
+	}
+	payload, err := json.Marshal(certRejectPayload{UID: uid, Src: src, Host: host, Err: reason})
+	if err != nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	cb.OnCertRejected(string(payload))
 }

@@ -29,6 +29,8 @@ class ConfigRepository(
         val KEY_LANGUAGE = stringPreferencesKey("language")
         val KEY_FILTER_MODE = intPreferencesKey("filter_mode") // 0: None, 1: Whitelist, 2: Blacklist
         val KEY_WHITELIST_PACKAGES = stringPreferencesKey("whitelist_packages")
+        val KEY_AUTO_BLACKLIST_ENABLED = booleanPreferencesKey("auto_blacklist_enabled")
+        val KEY_AUTO_EXCLUDED_PACKAGES = stringPreferencesKey("auto_excluded_packages")
         val KEY_BYPASS_LAN = booleanPreferencesKey("bypass_lan")
         val KEY_IPV6_MODE = intPreferencesKey("ipv6_mode")
         val KEY_AUTO_UPDATE_CHECK = booleanPreferencesKey("auto_update_check")
@@ -90,6 +92,10 @@ class ConfigRepository(
     val whitelistPackages: Flow<Set<String>> = context.dataStore.data.map {
         it[KEY_WHITELIST_PACKAGES]?.split(",")?.filter { p -> p.isNotBlank() }?.toSet() ?: emptySet()
     }
+    val autoBlacklistEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_AUTO_BLACKLIST_ENABLED] ?: false }
+    val autoExcludedPackages: Flow<Set<String>> = context.dataStore.data.map {
+        it[KEY_AUTO_EXCLUDED_PACKAGES]?.split(",")?.filter { p -> p.isNotBlank() }?.toSet() ?: emptySet()
+    }
     val bypassLan: Flow<Boolean> = context.dataStore.data.map { it[KEY_BYPASS_LAN] ?: true }
     val autoUpdateCheck: Flow<Boolean> = context.dataStore.data.map { it[KEY_AUTO_UPDATE_CHECK] ?: true }
     val updateCheckInterval: Flow<Int> =
@@ -124,6 +130,12 @@ class ConfigRepository(
     suspend fun setFilterMode(mode: Int) = context.dataStore.edit { it[KEY_FILTER_MODE] = mode }
     suspend fun setWhitelistPackages(packages: Set<String>) = context.dataStore.edit {
         it[KEY_WHITELIST_PACKAGES] = packages.joinToString(",")
+    }
+    suspend fun setAutoBlacklistEnabled(enable: Boolean) = context.dataStore.edit {
+        it[KEY_AUTO_BLACKLIST_ENABLED] = enable
+    }
+    suspend fun setAutoExcludedPackages(packages: Set<String>) = context.dataStore.edit {
+        it[KEY_AUTO_EXCLUDED_PACKAGES] = packages.joinToString(",")
     }
     suspend fun setBypassLan(enable: Boolean) = context.dataStore.edit { it[KEY_BYPASS_LAN] = enable }
     suspend fun setAutoUpdateCheck(enable: Boolean) = context.dataStore.edit { it[KEY_AUTO_UPDATE_CHECK] = enable }

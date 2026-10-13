@@ -62,7 +62,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if _, pkg, ok := service.OwningPackage(); ok {
-		return fmt.Errorf("this binary is owned by the %q package and cannot self-update\n  upgrade instead:  pacman -Syu %s", pkg, pkg)
+		return fmt.Errorf("this binary is owned by the %q package and cannot self-update\n  upgrade instead:  paru -Syu %s   (or: yay -Syu %s)", pkg, pkg, pkg)
 	}
 
 	if info.AssetURL == "" {

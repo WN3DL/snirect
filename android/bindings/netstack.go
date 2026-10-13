@@ -169,8 +169,12 @@ func (b *netstackBridge) installForwarders() {
 		// Capture the original destination NOW: r.ID() (and the Address slice
 		// inside it) is only guaranteed valid inside this callback, and the
 		// relay runs on its own goroutine. String() copies the bytes out.
+		// LocalAddress/LocalPort are the flow's destination (what the app
+		// dialed); RemoteAddress/RemotePort are the app socket's TUN-side
+		// address:port — the source tuple needed for uid attribution.
 		id := r.ID()
 		dst := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
+		src := net.JoinHostPort(id.RemoteAddress.String(), strconv.Itoa(int(id.RemotePort)))
 
 		var wq waiter.Queue
 		tep, err := r.CreateEndpoint(&wq)
@@ -181,7 +185,7 @@ func (b *netstackBridge) installForwarders() {
 		tep.SocketOptions().SetKeepAlive(true)
 		r.Complete(false)
 		conn := gonet.NewTCPConn(&wq, tep)
-		go b.relayToProxy(conn, dst)
+		go b.relayToProxy(conn, dst, src)
 	})
 	b.stk.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 
@@ -211,7 +215,12 @@ func (b *netstackBridge) installForwarders() {
 // original destination the captured app dialed), so the proxy's handleConnect
 // takes over: SNI-rewrite/MITM for :443, direct tunnel otherwise, upstream
 // dials through its protect()-wrapped outbound dialer.
-func (b *netstackBridge) relayToProxy(client net.Conn, dst string) {
+//
+// src is the flow's TUN-side source ("ip:port"). Before the CONNECT goes out,
+// the kernel is asked who owns that socket (inet_diag, see sockdiag): when
+// resolvable, the uid rides along in an X-Snirect-Uid header so the proxy can
+// attribute a client-side certificate rejection (pinning) back to the app.
+func (b *netstackBridge) relayToProxy(client net.Conn, dst, src string) {
 	defer client.Close()
 	proxyAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(b.localPort))
 	upstream, err := b.proxyDialer.Dial("tcp", proxyAddr)
@@ -224,8 +233,20 @@ func (b *netstackBridge) relayToProxy(client net.Conn, dst string) {
 	// Synthesize the proxy handshake (audit B1). Without this the proxy's
 	// http.Server would parse the app's TLS ClientHello as a request line and
 	// reject the flow; with it, the flow enters handleConnect like any
-	// desktop CONNECT.
-	req := "CONNECT " + dst + " HTTP/1.1\r\nHost: " + dst + "\r\n\r\n"
+	// desktop CONNECT. X-Snirect-Uid carries flow attribution (netlink, or
+	// the host getConnectionOwnerUid fallback for :443 — MITM is the only
+	// consumer of the uid); X-Snirect-Src always carries the flow's source
+	// tuple so the host can retry attribution at certificate-rejection time,
+	// when the socket was certainly established.
+	req := "CONNECT " + dst + " HTTP/1.1\r\nHost: " + dst + "\r\n"
+	req += "X-Snirect-Src: " + src + "\r\n"
+	_, dPort, _ := net.SplitHostPort(dst)
+	if dPort == "443" {
+		if uid := uidOfConnectFlow(src, dst); uid > 0 {
+			req += "X-Snirect-Uid: " + strconv.Itoa(uid) + "\r\n"
+		}
+	}
+	req += "\r\n"
 	if _, err := upstream.Write([]byte(req)); err != nil {
 		LogWarn("netstack: send CONNECT %s failed: %v", dst, err)
 		return

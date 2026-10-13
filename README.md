@@ -23,7 +23,7 @@ Snirect 是一个本地 HTTP/HTTPS 代理。对 TLS 流量，它在握手阶段�
 
 - **SNI 改写**：规则支持 `example.com` / `*.example.com` / `*example.com` 三种写法；改写目标为空即剥掉 SNI
 - **证书策略**：`CertVerify` 按域名放行证书、`IgnoreExpiry` 忽略过期证书、`Hosts` 把域名指到固定 IP 绕过 DNS
-- **MITM**：本机生成根 CA 并签发叶证书（带缓存），系统需信任该 CA 才能解密；Firefox 用独立的 NSS 库，单独安装
+- **MITM**：本机生成根 CA 并签发叶证书（带缓存），系统需信任该 CA 才能解密；Firefox 用独立的 NSS 库，单独安装（哪些程序不认系统 CA，见 [CA 信任边界](#ca-信任边界)）
 - **DNS**：UDP / TCP / DoT / DoH 上游，域名上游可用 IP bootstrap 解析，ECS 支持 auto 模式；IP 优选提供 fastest 模式（v4/v6 都测延迟取最快，结果缓存）
 - **系统代理**：设置 PAC；`proxy env` 打印终端用的 `http_proxy` 命令，配合 `eval` 使用
 - **tunnel hook**：站点级修正逻辑挂在转发路径外，目前只有 GitHub codeload 重定向修正一处
@@ -73,6 +73,32 @@ make build
 配置文件位于 `~/.config/snirect/config.toml`（Windows 为 `%APPDATA%\snirect\config.toml`），所有项都有内置默认值，注释掉即回落默认。详见 [docs/config.md](docs/config.md) 与 `internal/config/defaults.go` 中的完整示例。
 
 分流规则静态编进二进制（`internal/rules/builtin_rules.go`），其中 SNI 改写与 Hosts 表同步自 [Cealing-Host](https://github.com/SpaceTimee/Cealing-Host) 项目并做了适配，运行时不联网拉取。
+
+## CA 信任边界
+
+`cert install` 只覆盖读系统证书库的程序（浏览器、curl、git、Go 系 CLI）。很多工具自带根证书库、不读系统库，装完 CA 照样报 `certificate verify failed`：
+
+| 程序 | 默认证书来源 | 解法 |
+| :--- | :--- | :--- |
+| uv | 内置 Mozilla 根集 | `UV_SYSTEM_CERTS=1`（或 `uv --system-certs`） |
+| conda | 环境内 certifi | `conda config --set ssl_verify <拼合包>`，或 `REQUESTS_CA_BUNDLE=<拼合包>` |
+| pip / requests | certifi（pip ≥ 24.2 且 Python ≥ 3.10 时已默认读系统库） | `PIP_CERT=<拼合包>` / `REQUESTS_CA_BUNDLE=<拼合包>` |
+| Node.js | 内置 Mozilla 根集 | `NODE_EXTRA_CA_CERTS=<root.crt>`；v22.15+ / v24+ 也可 `NODE_USE_SYSTEM_CA=1` |
+| JVM（Java / Gradle / Android SDK 下载器） | 自带 `cacerts` | `keytool -importcert -cacerts -alias snirect -file <root.crt>`（口令默认 `changeit`） |
+| Firefox / Thunderbird | 独立 NSS 库 | `snirect cert firefox install` |
+
+`<拼合包>` = 系统根集 + snirect CA 顺序拼接。注意 `PIP_CERT` / `REQUESTS_CA_BUNDLE` / conda `ssl_verify` / uv `SSL_CERT_FILE` 都是**替换**语义：只指 `root.crt` 会把没走 MITM 的站点一起拒掉。系统 bundle：Linux 为 `/etc/ssl/certs/ca-certificates.crt`（`cert install` 后已含 snirect CA，可直接指）、macOS 为 `/etc/ssl/cert.pem`、Windows 可取 Python `certifi.where()` 那份拼。`NODE_EXTRA_CA_CERTS` 与 keytool 是追加语义，指 `root.crt` 即可。
+
+CA 路径：`~/.config/snirect/certs/root.crt`（Windows `%APPDATA%\snirect\certs\root.crt`）。另注意 macOS 的 Keychain 信任只有 Safari / Chrome / Go 系认；curl / git（尤其 Homebrew 版）仍报证书错误时，把 `root.crt` 拼进各自读的 bundle。
+
+装了 CA 也不生效的两类流量：
+
+- **证书固定**：网银、部分 Google / IM 客户端把证书 pin 死在程序内，MITM 会让握手直接失败，用 PAC / 规则把这类域名排除
+- **Android 用户证书**：targetSdk ≥ 24 的 App 默认只信任系统库，用户证书对多数 App 无效。要解密：
+    - root 后把 CA 移进系统库（Magisk 模块）
+    - LSPosed + trustme 类 hook 模块（TrustMeAlready 等），把 App 的证书校验 hook 成信任用户证书
+    - 免 root 对单个 APK 打补丁：NPatch / LSPatch（实测 Wikipedia App 可行）
+    - 注意：App 内置安全 DNS（DoH，绕开系统解析）时，hook 方案同样会失效
 
 ## 目录结构
 

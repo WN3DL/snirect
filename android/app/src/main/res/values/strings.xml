@@ -120,6 +120,21 @@
     <string name="action_disable_anyway">Disable Anyway</string>
     <string name="action_cancel">Cancel</string>
 
+    <!-- Auto-Blacklist (cert-pinned apps) -->
+    <string name="group_auto_blacklist">Auto-Exclusion</string>
+    <string name="setting_auto_blacklist">Auto-exclude pinned apps</string>
+    <string name="setting_auto_blacklist_desc">On. Apps that reject the proxy certificate 3 times in 2 minutes bypass the VPN (restarts the VPN to apply)</string>
+    <string name="setting_auto_blacklist_off">Off. Apps rejecting the proxy certificate (pinning) keep failing until excluded manually</string>
+    <string name="auto_blacklist_enable_title">Enable auto-exclusion?</string>
+    <string name="auto_blacklist_enable_msg">An app that aborts its TLS connection because it does not trust the proxy certificate (pinning) is removed from the VPN after 3 rejections within 2 minutes and goes direct. Applying an exclusion restarts the VPN, interrupting all network for a moment.</string>
+    <string name="action_enable">Enable</string>
+    <string name="auto_exclude_title">Auto-Excluded Apps</string>
+    <string name="auto_exclude_apps_count">%1$d apps</string>
+    <string name="auto_exclude_clear_all">Clear all</string>
+    <string name="auto_exclude_empty_title">No auto-excluded apps</string>
+    <string name="auto_exclude_empty_hint">Apps that repeatedly reject the proxy certificate appear here and bypass the VPN</string>
+    <string name="auto_exclude_removed">Removed %1$s. It is captured by the VPN again.</string>
+
     <!-- Setup Guide / Help Screen -->
     <string name="help_title">Help &amp; Support</string>
     <string name="step_export">Export</string>

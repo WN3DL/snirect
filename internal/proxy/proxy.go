@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,15 @@ type ProxyServer struct {
 	semaphore chan struct{} //Limits concurrent connections
 	server    *http.Server
 	listener  net.Listener
+
+	// OnClientCertReject, when set (mobile only), fires when a client aborted
+	// the MITM handshake after our leaf certificate was delivered — the
+	// signature of certificate pinning. uid>0 is the flow attribution resolved
+	// by the netstack (X-Snirect-Uid); src is the flow's source tuple
+	// (X-Snirect-Src, always present on mobile flows) so the host can resolve
+	// the uid after the fact. Desktop flows carry neither and never trigger
+	// this.
+	OnClientCertReject func(uid int, src, host, reason string)
 
 	// outboundDialer, when set, is used for all upstream TCP dials. When nil,
 	// a fresh &net.Dialer{Timeout: cfg.Timeout.Dial} is used (the historical
@@ -253,6 +263,13 @@ func (s *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// otherwise the client expects an HTTP/2 SETTINGS frame and receives
 	// HTTP/1.1 text (curl error 16).
 	var remoteConn *tls.Conn
+	// servedCert flips once GetConfigForClient has returned successfully: from
+	// that point our leaf certificate is on the wire to the client. A
+	// handshake abort after this is the client rejecting our cert (pinning),
+	// not a broken upstream.
+	servedCert := false
+	uid := clientUID(r)
+	src := r.Header.Get("X-Snirect-Src")
 
 	clientTLS := &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -292,6 +309,11 @@ func (s *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 			remoteConn = rc
 			chosen := pickALPN(remoteConn.ConnectionState().NegotiatedProtocol)
 
+			// The upstream is verified and our leaf cert is about to go out
+			// with the ServerHello: from here, a handshake abort is the
+			// client's doing.
+			servedCert = true
+
 			// Per-connection config: selects the leaf cert (with SNI fallback
 			// to the CONNECT host) and pins the advertised ALPN to the
 			// upstream's negotiated protocol, guaranteeing both sides match.
@@ -316,6 +338,12 @@ func (s *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// handshake fails for some other reason (timeout, network noise).
 		// This connection is mid-handshake and cannot be salvaged, so close it.
 		logger.Client().Warn("client TLS handshake failed", "host", host, "error", err)
+		if servedCert && s.OnClientCertReject != nil && (uid > 0 || src != "") {
+			// The upstream was ready and our cert was served: report the
+			// rejection so the mobile host can attribute and auto-exclude the
+			// pinning app (uid may still be 0 — the host retries resolution).
+			s.OnClientCertReject(uid, src, host, err.Error())
+		}
 		if remoteConn != nil {
 			remoteConn.Close()
 		}
@@ -345,6 +373,17 @@ func (s *ProxyServer) hijackConnection(w http.ResponseWriter) (net.Conn, error) 
 	}
 	conn, _, err := hijacker.Hijack()
 	return conn, err
+}
+
+// clientUID extracts the originating app uid the mobile netstack relay pins
+// onto synthesized CONNECTs (X-Snirect-Uid). Desktop browsers never send it,
+// so the value is 0 and cert-reject attribution stays off.
+func clientUID(r *http.Request) int {
+	n, err := strconv.Atoi(r.Header.Get("X-Snirect-Uid"))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // shouldIntercept decides whether a CONNECT goes through the MITM pipeline or

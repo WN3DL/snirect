@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -456,14 +459,17 @@ func TestProxy_HTTPS_CONNECT(t *testing.T) {
 	}
 	defer certMgr.Close()
 
-	// Create rules: map target.example to 127.0.0.1 (loopback)
+	// Create rules: map target.example to 127.0.0.1 (loopback) and give it an
+	// SNI-rewrite (to itself) so shouldIntercept picks the MITM path — MITM
+	// selection is rule-driven, never keyed on CheckHostname.
 	sharedRules := rules.NewRules()
 	sharedRules.Hosts["target.example"] = "127.0.0.1"
+	sharedRules.AlterHostname["target.example"] = "target.example"
 	cfgRules := sharedRules
 
-	// Proxy configuration: disable hostname verification to trigger MITM.
-	// Port 0 lets the kernel pick a free port (Listen() writes the real port
-	// back into cfg.Server.Port), which avoids bind races across repeated/parallel runs.
+	// Proxy configuration: port 0 lets the kernel pick a free port (Listen()
+	// writes the real port back into cfg.Server.Port), which avoids bind races
+	// across repeated/parallel runs.
 	cfg := &config.Config{
 		CheckHostname: false,
 		Server: config.ServerConfig{
@@ -544,6 +550,139 @@ func TestProxy_HTTPS_CONNECT(t *testing.T) {
 	}
 	if string(body) != "OK" {
 		t.Errorf("unexpected response body: %s", body)
+	}
+}
+
+// TestConnect_CertRejectEvent drives a full MITM CONNECT with a "pinning"
+// client — one that aborts the handshake after receiving our leaf cert — and
+// asserts the OnClientCertReject callback fires with the uid from the
+// X-Snirect-Uid header. A second CONNECT without the header must stay silent.
+func TestConnect_CertRejectEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	certMgr, err := cert.NewCertificateManager(filepath.Join(tmpDir, "root.crt"), filepath.Join(tmpDir, "root.key"))
+	if err != nil {
+		t.Fatalf("NewCertManager failed: %v", err)
+	}
+	defer certMgr.Close()
+
+	sharedRules := rules.NewRules()
+	sharedRules.Hosts["target.example"] = "127.0.0.1"
+	sharedRules.AlterHostname["target.example"] = "target.example"
+
+	cfg := &config.Config{
+		CheckHostname: false,
+		Server: config.ServerConfig{
+			Address:    "127.0.0.1",
+			Port:       0,
+			BufferSize: 65536,
+		},
+	}
+	resolver := dns.NewResolver(cfg, sharedRules)
+	srv := NewProxyServer(cfg, sharedRules, certMgr, resolver)
+
+	events := make(chan struct {
+		uid  int
+		src  string
+		host string
+	}, 4)
+	srv.OnClientCertReject = func(uid int, src, host, reason string) {
+		events <- struct {
+			uid  int
+			src  string
+			host string
+		}{uid, src, host}
+	}
+
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go srv.Serve()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	// Upstream must sit on 443 for shouldIntercept to route the CONNECT into
+	// MITM (port != 443 is always a direct tunnel). Binding 443 needs
+	// CAP_NET_BIND_SERVICE — run the suite under `unshare -Urn` where that
+	// capability exists; otherwise skip rather than fake the path.
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	_ = ts.Listener.Close()
+	ln443, err := net.Listen("tcp", "127.0.0.1:443")
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.1:443 (needs CAP_NET_BIND_SERVICE, try `unshare -Urn go test`): %v", err)
+	}
+	ts.Listener = ln443
+	ts.StartTLS()
+	defer ts.Close()
+
+	// pinnedClient performs a CONNECT through the proxy and then runs the
+	// client side of the TLS handshake with a VerifyPeerCertificate that
+	// always fails — the signature of a certificate-pinning app.
+	pinnedClient := func(uid string) error {
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", cfg.Server.Port))
+		if err != nil {
+			t.Fatalf("dial proxy: %v", err)
+		}
+		defer conn.Close()
+		req := "CONNECT target.example:443 HTTP/1.1\r\nHost: target.example:443\r\n"
+		if uid != "" {
+			req += "X-Snirect-Uid: " + uid + "\r\n"
+		}
+		req += "\r\n"
+		if _, err := conn.Write([]byte(req)); err != nil {
+			t.Fatalf("write CONNECT: %v", err)
+		}
+		// Drain the CONNECT response without over-reading (byte-at-a-time so
+		// the buffered reader can't swallow the first TLS bytes).
+		head := make([]byte, 0, 128)
+		one := make([]byte, 1)
+		for !bytes.HasSuffix(head, []byte("\r\n\r\n")) {
+			if _, err := io.ReadFull(conn, one); err != nil {
+				t.Fatalf("read CONNECT response: %v", err)
+			}
+			head = append(head, one[0])
+		}
+		if !strings.Contains(string(head), "200") {
+			t.Fatalf("CONNECT refused: %q", string(head))
+		}
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName: "target.example",
+			VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+				return errors.New("pinning: leaf cert not trusted by app")
+			},
+		})
+		return tlsConn.Handshake()
+	}
+
+	if err := pinnedClient("10123"); err == nil {
+		t.Fatal("expected pinned client handshake to fail")
+	}
+
+	select {
+	case ev := <-events:
+		if ev.uid != 10123 {
+			t.Errorf("event uid: got %d, want 10123", ev.uid)
+		}
+		if ev.host != "target.example" {
+			t.Errorf("event host: got %q", ev.host)
+		}
+		if ev.src != "" {
+			t.Errorf("desktop flow should carry no src, got %q", ev.src)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnClientCertReject did not fire for a pinned client with uid")
+	}
+
+	// Anonymous flow (no header): handshake fails the same way but no event.
+	if err := pinnedClient(""); err == nil {
+		t.Fatal("expected pinned client handshake to fail")
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("unexpected cert-reject event for header-less flow: %+v", ev)
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 func (n *nonHijacker) Write([]byte) (int, error) { return 0, nil }

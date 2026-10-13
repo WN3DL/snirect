@@ -1,8 +1,14 @@
 package com.xihale.snirect.service
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
+import com.xihale.snirect.BuildConfig
 import com.xihale.snirect.data.model.LogLevel
 import com.xihale.snirect.data.repository.ConfigRepository
 import com.xihale.snirect.ktlib.EngineState
@@ -19,17 +25,32 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
+import java.lang.reflect.Method
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import com.xihale.snirect.util.AppLogger
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
 
     companion object {
         const val ACTION_START = "com.xihale.snirect.START"
         const val ACTION_STOP = "com.xihale.snirect.STOP"
+        private const val ACTION_DEBUG_AUTO_EXCLUDE = "com.xihale.snirect.debug.AUTO_EXCLUDE"
 
         /** Startup watchdog: engine must be Running within this window. */
         private const val STARTUP_TIMEOUT_MS = 15_000L
+
+        /**
+         * Auto-exclusion policy: a package that aborts the MITM handshake
+         * this many times within the window is treated as certificate-pinned
+         * and removed from the VPN's capture set (with an immediate restart).
+         */
+        private const val CERT_REJECT_THRESHOLD = 3
+        private const val CERT_REJECT_WINDOW_MS = 120_000L
 
         var isServiceRunning = false
             private set
@@ -40,6 +61,9 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
     private var isDestroyed = false
     private var teardownJob: Job? = null
     private var startJob: Job? = null
+
+    // Per-package timestamps of client certificate rejections (sliding window).
+    private val certRejectStrikes = ConcurrentHashMap<String, MutableList<Long>>()
 
     // A START that arrived while a teardown was still unwinding. Set under
     // lifecycleLock; cleared by any new teardown (STOP or engine death), so
@@ -65,11 +89,43 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
         AppLogger.init(this)
         isServiceRunning = true
         observeEngineState()
+        registerDebugHook()
+    }
+
+    /**
+     * Debug-builds-only test lever: `adb shell am broadcast -a
+     * com.xihale.snirect.debug.AUTO_EXCLUDE -e pkg <package>` drives the same
+     * autoExcludePackage path a real cert-reject strike would take (persist,
+     * restart, re-filter). Lets the exclusion pipeline be exercised on a ROM
+     * whose unrooted attribution is blocked (e.g. EMUI 10) without shipping
+     * any test scaffolding in release builds.
+     */
+    private var debugReceiver: BroadcastReceiver? = null
+
+    private fun registerDebugHook() {
+        if (!BuildConfig.DEBUG) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action != ACTION_DEBUG_AUTO_EXCLUDE) return
+                val pkg = intent.getStringExtra("pkg") ?: return
+                if (pkg == "clear") {
+                    AppLogger.w("DEBUG hook: clearing auto-excluded set")
+                    serviceScope.launch { repository.setAutoExcludedPackages(emptySet()) }
+                    return
+                }
+                AppLogger.w("DEBUG hook: auto-excluding $pkg")
+                serviceScope.launch { autoExcludePackage(pkg) }
+            }
+        }
+        registerReceiver(receiver, IntentFilter(ACTION_DEBUG_AUTO_EXCLUDE))
+        debugReceiver = receiver
     }
 
     override fun onDestroy() {
         isDestroyed = true
         isServiceRunning = false
+        debugReceiver?.let { runCatching { unregisterReceiver(it) } }
+        debugReceiver = null
         // Close the TUN promptly. The engine stop is best-effort off the main
         // thread: NonCancellable keeps the blocking call running to completion
         // on its IO thread even after serviceScope is cancelled below.
@@ -292,6 +348,7 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
         val logLvl = repository.logLevel.first()
         val filterMode = repository.filterMode.first()
         val whitelistPackages = repository.whitelistPackages.first()
+        val autoExcluded = repository.autoExcludedPackages.first()
         val bypassLan = repository.bypassLan.first()
         val blockIpv6 = ipv6Mode == ConfigRepository.IPV6_MODE_ONLY_V4
         val ipv6Enabled = ipv6Mode == ConfigRepository.IPV6_MODE_FULL_V6
@@ -313,7 +370,7 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
             AppLogger.i("VPN Setup: IPv6 Blocked")
         }
 
-        applyAppFiltering(builder, filterMode, whitelistPackages)
+        applyAppFiltering(builder, filterMode, whitelistPackages, autoExcluded)
 
         AppLogger.i("VPN Setup: Establishing TUN interface...")
         vpnInterface = builder.establish()
@@ -340,22 +397,30 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
     /**
      * Android's VpnService.Builder forbids mixing addAllowedApplication with
      * addDisallowedApplication (it throws IllegalArgumentException), so the two
-     * modes must stay mutually exclusive:
+     * modes must stay mutually exclusive. Auto-excluded packages (cert-pinned
+     * apps, see onCertRejected) are merged into whichever list expresses
+     * "bypass": removed from the whitelist set, or added to the disallow list.
      *
      * - Whitelist mode uses ONLY the allow-list. Everything not listed —
      *   including this app's own package, which is deliberately never added —
      *   already bypasses the VPN, so no addDisallowedApplication call is made.
      * - Blacklist/global mode uses ONLY disallowed entries: the app itself
-     *   (loop prevention) and the system download provider (kept from the
-     *   original VPN setup for behavioral parity; the repo history gives no
-     *   further rationale for it).
+     *   (loop prevention), the system download provider (kept from the
+     *   original VPN setup for behavioral parity), user blacklist entries, and
+     *   auto-excluded packages.
      */
-    private fun applyAppFiltering(builder: Builder, filterMode: Int, whitelistPackages: Set<String>) {
+    private fun applyAppFiltering(
+        builder: Builder,
+        filterMode: Int,
+        whitelistPackages: Set<String>,
+        autoExcluded: Set<String>,
+    ) {
+        val effectiveWhitelist = whitelistPackages - autoExcluded
         val useWhitelist = filterMode == ConfigRepository.FILTER_MODE_WHITELIST &&
-            whitelistPackages.isNotEmpty()
+            effectiveWhitelist.isNotEmpty()
 
         if (useWhitelist) {
-            for (pkg in whitelistPackages) {
+            for (pkg in effectiveWhitelist) {
                 if (pkg == packageName) continue // never tunnel ourselves
                 try {
                     builder.addAllowedApplication(pkg)
@@ -363,11 +428,15 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
                     AppLogger.w("Whitelist add failed: $pkg")
                 }
             }
-            AppLogger.i("VPN Setup: Whitelist mode with ${whitelistPackages.size} apps")
+            if (autoExcluded.isNotEmpty()) {
+                AppLogger.i("VPN Setup: Whitelist mode with ${effectiveWhitelist.size} apps (${autoExcluded.size} auto-excluded)")
+            } else {
+                AppLogger.i("VPN Setup: Whitelist mode with ${effectiveWhitelist.size} apps")
+            }
             return
         }
 
-        // Global / blacklist mode (an empty whitelist list also degrades to global).
+        // Global / blacklist mode (an empty effective whitelist also degrades to global).
         builder.addDisallowedApplication(packageName) // Always bypass self
         builder.addDisallowedApplication("com.android.providers.downloads")
         if (filterMode == ConfigRepository.FILTER_MODE_BLACKLIST && whitelistPackages.isNotEmpty()) {
@@ -381,6 +450,17 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
             AppLogger.i("VPN Setup: Blacklist mode with ${whitelistPackages.size} apps")
         } else {
             AppLogger.i("VPN Setup: Global mode (No filtering)")
+        }
+        for (pkg in autoExcluded) {
+            if (pkg == packageName) continue
+            try {
+                builder.addDisallowedApplication(pkg)
+            } catch (e: Exception) {
+                AppLogger.w("Auto-exclude add failed: $pkg")
+            }
+        }
+        if (autoExcluded.isNotEmpty()) {
+            AppLogger.i("VPN Setup: ${autoExcluded.size} auto-excluded packages bypass the VPN")
         }
     }
 
@@ -490,5 +570,151 @@ class SnirectVpnService : VpnService(), SnirectEngineCallbacks {
             AppLogger.e("VPN: Failed to protect socket")
         }
         return success
+    }
+
+    // Reflection handle for ConnectivityManager.getConnectionOwnerUid. Hidden
+    // (SystemApi) but callable from apps — NetGuard/PCAPdroid rely on it for
+    // unrooted per-app attribution on Android 10+, where SELinux denies both
+    // /proc/net and the app-side netlink sock_diag (verified on EMUI 10).
+    private val connOwnerUidMethod: Method? by lazy {
+        runCatching {
+            val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.javaClass.methods.firstOrNull { m ->
+                m.name == "getConnectionOwnerUid" &&
+                    m.parameterTypes.size == 3 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == InetSocketAddress::class.java &&
+                    m.parameterTypes[2] == InetSocketAddress::class.java
+            }
+        }.getOrNull()
+    }
+
+    @Volatile private var connOwnerUidBroken = false
+
+    override fun lookupUID(srcIP: String, srcPort: Int, dstIP: String, dstPort: Int): Int =
+        resolveUidOwner(srcIP, srcPort, dstIP, dstPort)
+
+    /**
+     * Resolves the uid owning a TCP socket via the hidden
+     * ConnectivityManager.getConnectionOwnerUid. Only meaningful for sockets
+     * in the ESTABLISHED state (netd's diag query misses SYN_SENT): called
+     * once per :443 flow at relay time (wins the race on some flows) and
+     * again at certificate-rejection time, when the socket was certainly
+     * established.
+     */
+    private fun resolveUidOwner(srcIP: String, srcPort: Int, dstIP: String, dstPort: Int): Int {
+        if (connOwnerUidBroken) return 0
+        val method = connOwnerUidMethod ?: run {
+            connOwnerUidBroken = true
+            AppLogger.w("sockdiag fallback: getConnectionOwnerUid unavailable; app attribution stays anonymous")
+            return 0
+        }
+        return try {
+            val cm = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val uid = method.invoke(
+                cm,
+                OsConstants.IPPROTO_TCP,
+                InetSocketAddress(InetAddress.getByName(srcIP), srcPort),
+                InetSocketAddress(InetAddress.getByName(dstIP), dstPort)
+            ) as? Int ?: 0
+            AppLogger.d("resolveUidOwner $srcIP:$srcPort -> $dstIP:$dstPort = $uid")
+            if (uid > 0) uid else 0
+        } catch (e: Exception) {
+            AppLogger.d("resolveUidOwner failed: ${e.message}")
+            0
+        }
+    }
+
+    /**
+     * Core reported a client that aborted the MITM handshake after our leaf
+     * cert was delivered (pinning). Resolves the uid to a package and, when
+     * the auto-blacklist is enabled, counts strikes: at [CERT_REJECT_THRESHOLD]
+     * within [CERT_REJECT_WINDOW_MS] the package is persisted as auto-excluded
+     * and the VPN restarts to apply the new capture set.
+     */
+    override fun onCertRejected(payload: String) {
+        if (isDestroyed || payload.isEmpty()) return
+        serviceScope.launch { handleCertRejected(payload) }
+    }
+
+    private suspend fun handleCertRejected(payload: String) {
+        val json = runCatching { JSONObject(payload) }.getOrNull() ?: return
+        var uid = json.optInt("uid", 0)
+        val host = json.optString("host", "?")
+        val src = json.optString("src", "")
+
+        // The core only attributes at flow start (native netlink), where the
+        // socket is SYN_SENT and EMUI's getConnectionOwnerUid can't see it
+        // either. Resolve now instead: the just-rejected socket was
+        // established, so the diag query can still find it.
+        if (uid <= 0 && src.isNotEmpty()) {
+            val srcIP: String?
+            val srcPort: Int
+            try {
+                val colon = src.lastIndexOf(':')
+                srcIP = src.substring(0, colon)
+                srcPort = src.substring(colon + 1).toInt()
+            } catch (_: Exception) {
+                return
+            }
+            uid = resolveUidOwner(srcIP, srcPort, host, 443)
+        }
+        if (uid < 10_000) {
+            AppLogger.d("cert-reject event unattributed: uid=$uid")
+            return
+        }
+
+        val pkg = packageManager.getPackagesForUid(uid)?.firstOrNull() ?: return
+        if (pkg == packageName || pkg == "android" || pkg.startsWith("com.android.")) return
+
+        val enabled = repository.autoBlacklistEnabled.first()
+        AppLogger.d("Cert reject: $pkg -> $host${if (enabled) "" else " (auto-blacklist off)"}")
+        if (!enabled) return
+
+        val now = System.currentTimeMillis()
+        val strikes = certRejectStrikes.getOrPut(pkg) {
+            Collections.synchronizedList(mutableListOf<Long>())
+        }
+        var triggered = false
+        synchronized(strikes) {
+            strikes.removeAll { it < now - CERT_REJECT_WINDOW_MS }
+            strikes.add(now)
+            if (strikes.size >= CERT_REJECT_THRESHOLD) {
+                strikes.clear()
+                triggered = true
+            }
+        }
+        if (!triggered) return
+        autoExcludePackage(pkg)
+    }
+
+    /** Persists the exclusion (idempotent) and restarts the VPN to apply it. */
+    private suspend fun autoExcludePackage(pkg: String) {
+        val current = repository.autoExcludedPackages.first()
+        if (pkg in current) return
+        repository.setAutoExcludedPackages(current + pkg)
+        AppLogger.w("Auto-excluded $pkg: it kept rejecting the proxy certificate (pinning). VPN restarts to apply.")
+        restartVpn()
+    }
+
+    /**
+     * Restart the VPN so applyAppFiltering picks up the updated auto-exclusion
+     * set. Reuses the supported stop→(deferred)start path: beginTeardown owns
+     * the teardown, and a re-delivered START either defers (its tail restarts
+     * the VPN) or starts fresh if the teardown somehow already finished. The
+     * ~1-2s all-app network blip is the price of VpnService filtering being
+     * establish-time-only.
+     */
+    private fun restartVpn() {
+        AppLogger.i("VPN Service: restarting to apply auto-exclusion")
+        certRejectStrikes.clear()
+        stopVpn()
+        try {
+            startService(Intent(this, SnirectVpnService::class.java).setAction(ACTION_START))
+        } catch (e: Exception) {
+            // Background start restriction: fall back to the teardown's
+            // deferred-start flag, which the teardown tail honors the same way.
+            synchronized(lifecycleLock) { deferredStart = true }
+        }
     }
 }

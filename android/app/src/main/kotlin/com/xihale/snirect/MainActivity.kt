@@ -39,6 +39,7 @@ import com.xihale.snirect.service.SnirectVpnService
 import com.xihale.snirect.service.VpnStatusManager
 import com.xihale.snirect.ktlib.SnirectClient
 import com.xihale.snirect.ui.screens.AppWhitelistScreen
+import com.xihale.snirect.ui.screens.AutoExcludeScreen
 import com.xihale.snirect.ui.screens.DnsScreen
 import com.xihale.snirect.ui.screens.HelpScreen
 import com.xihale.snirect.ui.screens.HomeScreen
@@ -374,6 +375,9 @@ class MainActivity : AppCompatActivity() {
                         }
                         composable("app_whitelist") {
                             AppWhitelistScreen(navController = navController, repository = repository)
+                        }
+                        composable("auto_excluded") {
+                            AutoExcludeScreen(navController = navController, repository = repository)
                         }
                         composable("logs") {
                             LogsScreen(navController = navController)
