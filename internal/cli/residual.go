@@ -23,7 +23,7 @@ func CheckResiduals(appDir, mode string) (bool, string) {
 		reasons = append(reasons, fmt.Sprintf("local certs directory (%s)", cd))
 	}
 
-	// Check mode-specific residuals
+	// Check mode-specific external residuals
 	switch strings.ToLower(mode) {
 	case "sysproxy":
 		if runtime.GOOS == "windows" {
@@ -37,6 +37,8 @@ func CheckResiduals(appDir, mode string) (bool, string) {
 		if err == nil && installed {
 			reasons = append(reasons, "Firefox NSS certificate database")
 		}
+	case "chromium":
+		// Chromium mode never installs certificates to the operating system.
 	}
 
 	if len(reasons) > 0 {
@@ -62,7 +64,6 @@ func PromptAndCleanResiduals(appDir, mode string, forceClean bool) error {
 			return fmt.Errorf("failed to read user input: %w", err)
 		}
 		input = strings.TrimSpace(strings.ToLower(input))
-		// Default to Yes if user presses Enter
 		if input != "" && input != "y" && input != "yes" {
 			fmt.Println("Residual cleanup skipped.")
 			return nil
@@ -75,7 +76,7 @@ func PromptAndCleanResiduals(appDir, mode string, forceClean bool) error {
 	return nil
 }
 
-// CleanAllResiduals unconditionally wipes certificates from the mode and the local folder.
+// CleanAllResiduals wipes certificates from the mode and the local folder.
 func CleanAllResiduals(appDir, mode string) {
 	switch strings.ToLower(mode) {
 	case "sysproxy":
@@ -86,13 +87,15 @@ func CleanAllResiduals(appDir, mode string) {
 		}
 	case "firefox":
 		_ = sysproxy.UninstallFirefoxCert()
+	case "chromium":
+		// Chromium mode never touches the system certificate store.
 	}
 
 	// Remove local certs directory
 	cd := certDir(appDir)
 	_ = os.RemoveAll(cd)
 
-	// Remove SPKI hash if present
+	// Remove SPKI hash file if present
 	_ = os.Remove(filepath.Join(appDir, "spki_hash.txt"))
 	logger.Control().Info("all certificate residuals removed", "mode", mode)
 }

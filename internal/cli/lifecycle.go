@@ -110,17 +110,17 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 		return err
 	}
 
-	activeMode := cfg.Mode
-	if activeMode == "" {
-		activeMode = "sysproxy"
-	}
+	caPolicy := cfg.GetCAInstall()
+	activeMode := cfg.GetMode()
 	if setProxyMode != "" && setProxyMode != "default" {
 		activeMode = strings.ToLower(setProxyMode)
 	}
 
-	// Check and handle residuals before doing anything
-	if err := PromptAndCleanResiduals(appDir, activeMode, forceClean); err != nil {
-		return err
+	// Residuals are ONLY checked and prompted if ca_install is "conservative"
+	if caPolicy == "conservative" {
+		if err := PromptAndCleanResiduals(appDir, activeMode, forceClean); err != nil {
+			return err
+		}
 	}
 
 	cd := certDir(appDir)
@@ -136,18 +136,20 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 		logger.Control().Warn("failed to load rules", "error", err)
 	}
 
-	// Clean local CA directory if in conservative mode
-	if cfg.CAInstall == "conservative" {
+	// In conservative mode, wipe the local certs directory on start to guarantee a fresh ephemeral CA.
+	// In auto, always, or never modes, existing certificates are preserved.
+	if caPolicy == "conservative" {
 		_ = os.RemoveAll(cd)
 		_ = os.MkdirAll(cd, 0o700)
 	}
 
+	// Always generate or load the CA, as the local proxy engine requires it for TLS interception.
 	cm, err := cert.NewCertificateManager(certPath(appDir), filepath.Join(cd, "root.key"))
 	if err != nil {
 		return fmt.Errorf("failed to initialize CA: %w", err)
 	}
 
-	// Write SPKI hash for Chromium
+	// Write SPKI hash file
 	spkiHash, err := cm.GetSPKIHash()
 	if err == nil {
 		_ = os.WriteFile(filepath.Join(appDir, "spki_hash.txt"), []byte(spkiHash), 0644)
@@ -158,11 +160,12 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 
 	env := &ProxyEnv{Cfg: cfg, AppDir: appDir, certMgr: cm, resolver: resolver, Server: srv}
 
-	// Defer cleanup hook
+	// Defer cleanup hook: ONLY delete certificates (local folder & system/Firefox store)
+	// when ca_install is "conservative".
 	defer func() {
-		logger.Control().Info("shutting down and cleaning certificate environment")
+		logger.Control().Info("shutting down proxy")
 		env.Cleanup()
-		if cfg.CAInstall == "conservative" {
+		if caPolicy == "conservative" {
 			CleanAllResiduals(appDir, activeMode)
 		}
 	}()
@@ -172,34 +175,51 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 	}
 	port := env.Cfg.Server.Port
 
-	// Apply mode
+	// Apply mode when -s flag is provided
 	if setProxyMode != "" {
 		switch activeMode {
 		case "sysproxy":
-			installCA(cfg, appDir)
+			if caPolicy != "never" {
+				installCA(cfg, appDir)
+			} else {
+				logger.Control().Info("sysproxy mode active: CA installation skipped (ca_install=never)")
+			}
 			sysproxy.SetPAC(pacURL("127.0.0.1", port))
 			env.pacSet = true
 			fmt.Printf("System proxy mode active. PAC set to port %d\n", port)
+
 		case "chromium":
 			binPath, err := FindChromiumPath(resolveChromiumPath(cfg))
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Launching Chromium browser with SPKI sandbox (hash: %s)...\n", spkiHash)
-			if _, err := LaunchChromium(binPath, port, spkiHash, appDir); err != nil {
+			// In "never" mode, do NOT pass SPKI parameter to Chromium
+			trustSPKI := (caPolicy != "never")
+			if trustSPKI {
+				fmt.Printf("Launching Chromium browser with SPKI sandbox (hash: %s)...\n", spkiHash)
+			} else {
+				fmt.Println("Launching Chromium browser without SPKI trust parameter (ca_install=never)...")
+			}
+			if _, err := LaunchChromium(binPath, port, spkiHash, appDir, trustSPKI); err != nil {
 				return err
 			}
+
 		case "firefox":
-			if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
-				logger.Control().Warn("failed to install cert to Firefox profiles", "error", err)
+			if caPolicy != "never" {
+				if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
+					logger.Control().Warn("failed to install cert to Firefox profiles", "error", err)
+				}
+			} else {
+				logger.Control().Info("firefox mode active: CA installation skipped (ca_install=never)")
 			}
 			binPath, err := FindFirefoxPath(resolveFirefoxPath(cfg))
 			if err == nil {
 				fmt.Println("Launching Firefox browser...")
 				_, _ = LaunchFirefox(binPath)
 			} else {
-				fmt.Println("Firefox cert installed. Manual browser configuration required.")
+				fmt.Println("Firefox cert configured. Manual browser launch required.")
 			}
+
 		default:
 			return fmt.Errorf("unsupported mode: %s (choose sysproxy, chromium, or firefox)", activeMode)
 		}

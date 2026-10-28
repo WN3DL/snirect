@@ -85,13 +85,17 @@ func FindFirefoxPath(customPath string) (string, error) {
 }
 
 // LaunchChromium launches an isolated sandboxed Chromium instance.
-func LaunchChromium(binPath string, port int, spkiHash string, appDir string) (*exec.Cmd, error) {
+// If trustSPKI is false (e.g. ca_install="never"), the SPKI allowlist flag is omitted.
+func LaunchChromium(binPath string, port int, spkiHash string, appDir string, trustSPKI bool) (*exec.Cmd, error) {
 	browserData := filepath.Join(appDir, "BrowserData")
 	args := []string{
 		fmt.Sprintf("--proxy-server=http://127.0.0.1:%d", port),
-		fmt.Sprintf("--ignore-certificate-errors-spki-list=%s", spkiHash),
 		fmt.Sprintf("--user-data-dir=%s", browserData),
 		"--disable-quic",
+	}
+
+	if trustSPKI && spkiHash != "" {
+		args = append(args, fmt.Sprintf("--ignore-certificate-errors-spki-list=%s", spkiHash))
 	}
 
 	cmd := exec.Command(binPath, args...)
