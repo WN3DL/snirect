@@ -11,6 +11,11 @@
 // Hosts/AlterHostname pins for upload/uploads/collector/alive and the
 // *github.io Pages front are snirect-specific too (validated against live
 // edges; see the inline comments).
+//
+// Front IPs are snirect-specific where upstream's are dead: 1.1.4.53 still
+// pins Google to 183.56.143.147 and Telegram to 45.192.12.153, but both
+// fronts were retired (see the inline notes). Front IPs are re-probed when a
+// host fails; the rest of the rule set stays verbatim from upstream.
 
 package rules
 
@@ -20,6 +25,7 @@ var builtinRules = &Rules{
 		"*.buy.yahoo.com":          "buy.yahoo.com",
 		"*.fanbox.cc":              "",
 		"*.ggpht.com":              "g.cn",
+		"*.googlevideo.com":        "",
 		"*.ig.me":                  "",
 		"*.media.tumblr.com":       "",
 		"*.pixiv.net":              "",
@@ -307,63 +313,77 @@ var builtinRules = &Rules{
 		"*xvideos.com":                false,
 		"*xvideos.red":                false,
 		"graphql.api.dailymotion.com": false,
-		"t.me":                        []interface{}{"*.telegram.org", "telegram.org"},
-		"telegram.me":                 []interface{}{"*.telegram.org", "telegram.org"},
-		"*telesco.pe":                 []interface{}{"*.telegram.org", "telegram.org"},
-		"*tg.dev":                     []interface{}{"*.telegram.org", "telegram.org"},
-		"www.google.com":              "g.cn",
-		"www.gstatic.com":             "g.cn",
-		"www.redditstatic.com":        []interface{}{"*.reddit.com", "reddit.com"},
-		"*youtu.be":                   []interface{}{"*.google.cn", "google.cn", "g.cn", "*.g.cn"},
-		"*youtube-nocookie.com":       []interface{}{"*.google.cn", "google.cn", "g.cn", "*.g.cn"},
+		// Cealing-Host 1.1.4.53 strips SNI on *.googlevideo.com, but Google's
+		// empty-SNI default vhost answers "invalid2.invalid" (CN=No SNI
+		// provided, probed 2026-10-28), so upstream's rule as-is would fail
+		// verification on every video request. Disable verify to keep the
+		// tunnel open, same class as the honeypot fronts above.
+		"*.googlevideo.com":     false,
+		"t.me":                  []interface{}{"*.telegram.org", "telegram.org"},
+		"telegram.me":           []interface{}{"*.telegram.org", "telegram.org"},
+		"*telesco.pe":           []interface{}{"*.telegram.org", "telegram.org"},
+		"*tg.dev":               []interface{}{"*.telegram.org", "telegram.org"},
+		"www.google.com":        "g.cn",
+		"www.gstatic.com":       "g.cn",
+		"www.redditstatic.com":  []interface{}{"*.reddit.com", "reddit.com"},
+		"*youtu.be":             []interface{}{"*.google.cn", "google.cn", "g.cn", "*.g.cn"},
+		"*youtube-nocookie.com": []interface{}{"*.google.cn", "google.cn", "g.cn", "*.g.cn"},
 	},
 	Hosts: map[string]string{
-		"*.fanbox.cc":             "210.140.139.155",
-		"*.ggpht.com":             "183.56.143.147",
-		"*.ig.me":                 "157.240.27.174",
-		"*.media.tumblr.com":      "192.0.77.3",
-		"*.pixiv.net":             "210.140.139.155",
-		"*.t.me":                  "45.192.12.153",
-		"*.w.wiki":                "185.15.59.224",
-		"*amazon.co.jp":           "13.35.219.115",
-		"*android.com":            "183.56.143.147",
-		"*api.mega.co.nz":         "66.203.125.15",
-		"*apkmirror.com":          "104.17.67.215",
-		"*archive.org":            "207.241.237.2",
-		"*archiveofourown.org":    "104.20.8.2",
-		"*audiomack.com":          "3.167.200.113",
-		"*bbc.co.uk":              "23.77.21.232",
-		"*bbc.com":                "146.75.36.81",
-		"*bbci.co.uk":             "23.77.21.232",
-		"*blogger.com":            "183.56.143.147",
-		"*character.ai":           "104.18.223.226",
-		"*dailymotion.com":        "195.8.215.140",
-		"*discord.com":            "162.159.136.232",
-		"*discord.gg":             "162.159.130.234",
-		"*discordapp.com":         "162.159.130.233",
-		"*discordapp.net":         "162.159.130.232",
-		"*dropbox.com":            "162.125.248.18",
-		"*duckduckgo.com":         "20.43.161.105",
-		"*e-hentai.org":           "172.66.132.196",
-		"*ehgt.org":               "109.236.85.28",
-		"*ehtracker.org":          "5.79.104.115",
-		"*ehwiki.org":             "178.162.151.58",
-		"*etsy.com":               "151.101.193.224",
-		"*exhentai.org":           "178.175.132.22",
-		"*eyny.com":               "23.19.72.223",
-		"*facebook.com":           "157.240.22.169",
-		"*fbcdn.net":              "157.240.22.169",
-		"*flickr.com":             "13.33.142.102",
-		"*gamer.com.tw":           "104.16.223.104",
-		"*gelbooru.com":           "108.181.143.72",
-		"*github.com":             "20.27.177.113",
-		"*github.io":              "185.199.108.153",
-		"*githubusercontent.com":  "185.199.108.133",
-		"*google.com":             "183.56.143.147",
-		"*google.com.hk":          "183.56.143.147",
+		"*.fanbox.cc":            "210.140.139.155",
+		"*.ggpht.com":            "64.233.160.142",
+		"*.ig.me":                "157.240.27.174",
+		"*.media.tumblr.com":     "192.0.77.3",
+		"*.pixiv.net":            "210.140.139.155",
+		"*.t.me":                 "149.154.166.110",
+		"*.w.wiki":               "185.15.59.224",
+		"*amazon.co.jp":          "13.35.219.115",
+		"*android.com":           "64.233.160.142",
+		"*api.mega.co.nz":        "66.203.125.15",
+		"*apkmirror.com":         "104.17.67.215",
+		"*archive.org":           "207.241.237.2",
+		"*archiveofourown.org":   "104.20.8.2",
+		"*audiomack.com":         "3.167.200.113",
+		"*bbc.co.uk":             "23.77.21.232",
+		"*bbc.com":               "146.75.36.81",
+		"*bbci.co.uk":            "23.77.21.232",
+		"*blogger.com":           "64.233.160.142",
+		"*character.ai":          "104.18.223.226",
+		"*dailymotion.com":       "195.8.215.140",
+		"*discord.com":           "162.159.136.232",
+		"*discord.gg":            "162.159.130.234",
+		"*discordapp.com":        "162.159.130.233",
+		"*discordapp.net":        "162.159.130.232",
+		"*dropbox.com":           "162.125.248.18",
+		"*duckduckgo.com":        "20.43.161.105",
+		"*e-hentai.org":          "172.66.132.196",
+		"*ehgt.org":              "109.236.85.28",
+		"*ehtracker.org":         "5.79.104.115",
+		"*ehwiki.org":            "178.162.151.58",
+		"*etsy.com":              "151.101.193.224",
+		"*exhentai.org":          "178.175.132.22",
+		"*eyny.com":              "23.19.72.223",
+		"*facebook.com":          "157.240.22.169",
+		"*fbcdn.net":             "157.240.22.169",
+		"*flickr.com":            "13.33.142.102",
+		"*gamer.com.tw":          "104.16.223.104",
+		"*gelbooru.com":          "108.181.143.72",
+		"*github.com":            "20.27.177.113",
+		"*github.io":             "185.199.108.153",
+		"*githubusercontent.com": "185.199.108.133",
+		// Upstream's 183.56.143.147 Google front is retired: 183.56.143.0/24 is
+		// shared hosting now (443 refused on .147; the rest answer VMware /
+		// Huawei / jointas certs — probed 2026-10-28 from both a CN VPS and an
+		// unfiltered host). 64.233.160.142 (oi-in-f142.1e100.net) is a Google
+		// GFE that answers SNI g.cn with the *.google.cn leaf (SANs include
+		// g.cn) and serves the real content behind the original Host header:
+		// www.google.com 204 / search 200 / gstatic 204 / youtube 200 /
+		// ytimg 200, stable 5/5 probes from a Tencent Cloud GZ VPS.
+		"*google.com":             "64.233.160.142",
+		"*google.com.hk":          "64.233.160.142",
 		"*gravatar.com":           "192.0.80.240",
 		"*greasyfork.org":         "96.126.98.220",
-		"*gstatic.com":            "183.56.143.147",
+		"*gstatic.com":            "64.233.160.142",
 		"*hentaiverse.org":        "178.162.151.56",
 		"*huggingface.co":         "3.167.200.113",
 		"*imgur.com":              "199.232.196.193",
@@ -400,42 +420,49 @@ var builtinRules = &Rules{
 		"*startpage.com":          "67.63.60.231",
 		"*steamcommunity.com":     "184.50.187.66",
 		"*sukebei.nyaa.si":        "198.251.89.38",
-		"*telegram.org":           "45.192.12.153",
-		"*telesco.pe":             "45.192.12.153",
-		"*tg.dev":                 "45.192.12.153",
-		"*thetvdb.com":            "13.35.222.88",
-		"*tumblr.com":             "192.0.77.40",
-		"*twitch.tv":              "151.101.194.167",
-		"*v2ex.com":               "172.66.137.6",
-		"*vercel.app":             "64.29.17.193",
-		"*vimeo.com":              "162.159.138.60",
-		"*whatsapp.com":           "157.240.225.60",
-		"*whatsapp.net":           "157.240.225.60",
-		"*wikibooks.org":          "185.15.59.224",
-		"*wikidata.org":           "185.15.59.224",
-		"*wikifunctions.org":      "185.15.59.224",
-		"*wikimedia.org":          "185.15.59.224",
-		"*wikinews.org":           "185.15.59.224",
-		"*wikipedia.org":          "185.15.59.224",
-		"*wikiquote.org":          "185.15.59.224",
-		"*wikisource.org":         "185.15.59.224",
-		"*wikiversity.org":        "185.15.59.224",
-		"*wikivoyage.org":         "185.15.59.224",
-		"*wiktionary.org":         "185.15.59.224",
-		"*xhamster.com":           "104.17.35.109",
-		"*xhamster42.desi":        "104.17.35.109",
-		"*xnxx.com":               "89.222.127.8",
-		"*xvideos.com":            "89.222.127.8",
-		"*xvideos.red":            "89.222.127.8",
-		"*youtu.be":               "183.56.143.147",
-		"*youtube-nocookie.com":   "183.56.143.147",
-		"*youtube.com":            "183.56.143.147",
-		"*z-lib.help":             "176.123.7.105",
-		"*z-library.sk":           "176.123.7.105",
-		"a5.behance.net":          "13.35.185.106",
-		"account-api.proton.me":   "185.70.42.20",
-		"account.nicovideo.jp":    "3.167.200.113",
-		"account.proton.me":       "185.70.42.36",
+		// Upstream's 45.192.12.153 Telegram front is gone: it answers every SNI
+		// with a Traefik default cert and 45.192.12.0/24 is shared hosting
+		// (cdnjs/wikipedia/cloudflare vhosts — probed 2026-10-28). Telegram's
+		// own DC IP serves all *.telegram.org hosts on empty SNI with the real
+		// GoDaddy leaf (*.telegram.org, valid to 2027-03): api 302, getMe 404
+		// JSON, web 200, t.me/telegram.me/tg.dev 302 — probed live from a
+		// Tencent Cloud GZ VPS.
+		"*telegram.org":         "149.154.166.110",
+		"*telesco.pe":           "149.154.166.110",
+		"*tg.dev":               "149.154.166.110",
+		"*thetvdb.com":          "13.35.222.88",
+		"*tumblr.com":           "192.0.77.40",
+		"*twitch.tv":            "151.101.194.167",
+		"*v2ex.com":             "172.66.137.6",
+		"*vercel.app":           "64.29.17.193",
+		"*vimeo.com":            "162.159.138.60",
+		"*whatsapp.com":         "157.240.225.60",
+		"*whatsapp.net":         "157.240.225.60",
+		"*wikibooks.org":        "185.15.59.224",
+		"*wikidata.org":         "185.15.59.224",
+		"*wikifunctions.org":    "185.15.59.224",
+		"*wikimedia.org":        "185.15.59.224",
+		"*wikinews.org":         "185.15.59.224",
+		"*wikipedia.org":        "185.15.59.224",
+		"*wikiquote.org":        "185.15.59.224",
+		"*wikisource.org":       "185.15.59.224",
+		"*wikiversity.org":      "185.15.59.224",
+		"*wikivoyage.org":       "185.15.59.224",
+		"*wiktionary.org":       "185.15.59.224",
+		"*xhamster.com":         "104.17.35.109",
+		"*xhamster42.desi":      "104.17.35.109",
+		"*xnxx.com":             "89.222.127.8",
+		"*xvideos.com":          "89.222.127.8",
+		"*xvideos.red":          "89.222.127.8",
+		"*youtu.be":             "64.233.160.142",
+		"*youtube-nocookie.com": "64.233.160.142",
+		"*youtube.com":          "64.233.160.142",
+		"*z-lib.help":           "176.123.7.105",
+		"*z-library.sk":         "176.123.7.105",
+		"a5.behance.net":        "13.35.185.106",
+		"account-api.proton.me": "185.70.42.20",
+		"account.nicovideo.jp":  "3.167.200.113",
+		"account.proton.me":     "185.70.42.36",
 		// snirect-specific: these live *.github.com vhosts bounce (301 →
 		// github.com) on the empty-SNI default vhost of the *github.com web
 		// edge. Pin each to an edge whose vhost tier serves it: the beacon/ws
@@ -452,17 +479,17 @@ var builtinRules = &Rules{
 		"blog.docker.io":        "elb-io.us-east-1.aws.dckr.io",
 		"business.whatsapp.com": "157.240.22.169",
 		// snirect-specific: googleapis API hosts (glm-agy: Cloud Code Assist +
-		// OAuth token) are IP-blocked from mainland networks at Google's global
-		// ranges, and the 120.253.253.0/24 mainland edge is cache-only (404s
-		// every non-static path). 183.56.143.147 is a full GFE serving the real
-		// API backends on the original SNI with a Google Trust Services cert
-		// validating for the target host (validated live 2026-09 from a Tencent
-		// Cloud GZ VPS: token → 400 unsupported_grant_type, quota → 401 missing
-		// auth). Hosts-only pin on purpose: no SNI rewrite, TLS passes through,
-		// no CertVerify needed.
-		"cloudcode-pa.googleapis.com":       "183.56.143.147",
-		"daily-cloudcode-pa.googleapis.com": "183.56.143.147",
-		"oauth2.googleapis.com":             "183.56.143.147",
+		// OAuth token) get poisoned DNS answers from mainland resolvers, and the
+		// 120.253.253.0/24 mainland edge is cache-only (404s every non-static
+		// path). 64.233.160.142 is a full GFE that is reachable from CN and
+		// serves the real API backends on the original SNI with a Google Trust
+		// Services leaf covering *.googleapis.com (validated live 2026-10-28
+		// from a Tencent Cloud GZ VPS: token → 400 unsupported_grant_type).
+		// Hosts-only pin on purpose: no SNI rewrite, TLS passes through, no
+		// CertVerify needed.
+		"cloudcode-pa.googleapis.com":       "64.233.160.142",
+		"daily-cloudcode-pa.googleapis.com": "64.233.160.142",
+		"oauth2.googleapis.com":             "64.233.160.142",
 		"calendar.proton.me":                "185.70.42.39",
 		"cdn-registry-1.docker.io":          "registry.ipv4.docker.com",
 		"cdn.jsdelivr.net":                  "104.16.89.20",
@@ -492,7 +519,7 @@ var builtinRules = &Rules{
 		"guce.yahoo.com":                    "guce.yahoo.com",
 		"hello.vrchat.com":                  "198.185.159.145",
 		"hub.docker.com":                    "hub-origin.docker.com",
-		"i.ytimg.com":                       "183.56.143.147",
+		"i.ytimg.com":                       "64.233.160.142",
 
 		"identity.flickr.com": "100.57.141.104",
 		"ig.me":               "157.240.27.174",
@@ -527,8 +554,8 @@ var builtinRules = &Rules{
 		"status.docker.io":                     "elb-io.us-east-1.aws.dckr.io",
 		"store.steampowered.com":               "23.39.61.133",
 		"support.github.com":                   "185.199.108.133",
-		"t.me":                                 "45.192.12.153",
-		"telegram.me":                          "45.192.12.153",
+		"t.me":                                 "149.154.166.110",
+		"telegram.me":                          "149.154.166.110",
 		"upld.e-hentai.org":                    "89.149.221.236",
 		// snirect-specific: upload.github.com has no public A record (GitHub
 		// removed it from DNS; only the 302 from github.com/git-receive-pack

@@ -121,6 +121,57 @@ func TestLoadRules_GitHubEdgePins(t *testing.T) {
 	}
 }
 
+// TestLoadRules_GoogleTelegramFrontPins is the regression guard for the
+// domain-fronted Google and Telegram rule families. Both upstream fronts died
+// (183.56.143.147 retired → 443 refused; 45.192.12.153 now a Traefik default
+// cert), which took every google.com/gstatic/youtube/telegram.org host down
+// with a dial or handshake failure. The pins below are the replacements
+// validated live on 2026-10-28: the Google GFE answers SNI g.cn with the
+// *.google.cn leaf (SANs include g.cn) while serving the original Host, and
+// the Telegram DC IP answers every *.telegram.org host on empty SNI.
+func TestLoadRules_GoogleTelegramFrontPins(t *testing.T) {
+	r, err := LoadRules()
+	if err != nil {
+		t.Fatalf("LoadRules() error = %v", err)
+	}
+
+	cases := []struct{ host, sni, ip string }{
+		{"www.google.com", "g.cn", "64.233.160.142"},
+		{"www.gstatic.com", "g.cn", "64.233.160.142"},
+		{"www.youtube.com", "g.cn", "64.233.160.142"},
+		{"i.ytimg.com", "g.cn", "64.233.160.142"},
+		{"api.telegram.org", "", "149.154.166.110"},
+		{"web.telegram.org", "", "149.154.166.110"},
+		{"t.me", "", "149.154.166.110"},
+		{"telegram.me", "", "149.154.166.110"},
+		// Synced from Cealing-Host 1.1.4.53: YouTube's video CDN is SNI-stripped
+		// with no host pin, like the pixiv/fanbox front.
+		{"r1---sn-4g5e6nez.googlevideo.com", "", ""},
+	}
+	for _, tc := range cases {
+		if got, ok := r.GetAlterHostname(tc.host); !ok || got != tc.sni {
+			t.Errorf("GetAlterHostname(%s) = (%q, %v), want (%q, true)", tc.host, got, ok, tc.sni)
+		}
+		got, ok := r.GetHost(tc.host)
+		if tc.ip == "" {
+			if ok {
+				t.Errorf("GetHost(%s) = (%q, true), want no pin (upstream leaves the host empty)", tc.host, got)
+			}
+			continue
+		}
+		if !ok || got != tc.ip {
+			t.Errorf("GetHost(%s) = (%q, %v), want (%q, true)", tc.host, got, ok, tc.ip)
+		}
+	}
+
+	// Upstream strips SNI on *.googlevideo.com; Google answers the empty-SNI
+	// default vhost with an invalid2.invalid leaf, so the policy must be off or
+	// every video request dies in verification.
+	if policy, ok := r.GetCertVerify("r1---sn-4g5e6nez.googlevideo.com"); !ok || policy.Enabled {
+		t.Fatalf("CertVerify(googlevideo) = (%+v, %v), want disabled policy", policy, ok)
+	}
+}
+
 // TestLoadRules_FrontedHostsHaveAllowlist is the regression guard for the
 // domain-fronting cases surfaced (and fixed) by `snirect doctor`. Each entry
 // below rewrites SNI to a front domain whose cert does NOT name the original
