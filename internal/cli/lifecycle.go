@@ -193,7 +193,8 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 			if err != nil {
 				return err
 			}
-			// In "never" mode, do NOT pass SPKI parameter to Chromium
+			// In "never" mode, do NOT pass SPKI parameter.
+			// In ALL other modes ("conservative", "auto", "always"), DO pass the SPKI parameter!
 			trustSPKI := (caPolicy != "never")
 			if trustSPKI {
 				fmt.Printf("Launching Chromium browser with SPKI sandbox (hash: %s)...\n", spkiHash)
@@ -206,12 +207,26 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 
 		case "firefox":
 			if caPolicy != "never" {
-				if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
-					logger.Control().Warn("failed to install cert to Firefox profiles", "error", err)
+				// For "always" and "conservative": install every time.
+				// For "auto": install only if missing.
+				if caPolicy == "always" || caPolicy == "conservative" {
+					if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
+						logger.Control().Warn("failed to install cert to Firefox profiles", "error", err)
+					} else {
+						logger.Control().Info("certificate reinstalled to Firefox profiles (policy: always/conservative)")
+					}
+				} else if caPolicy == "auto" {
+					installed, err := sysproxy.CheckFirefoxCert()
+					if err != nil || !installed {
+						if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
+							logger.Control().Warn("failed to install cert to Firefox profiles", "error", err)
+						}
+					}
 				}
 			} else {
 				logger.Control().Info("firefox mode active: CA installation skipped (ca_install=never)")
 			}
+
 			binPath, err := FindFirefoxPath(resolveFirefoxPath(cfg))
 			if err == nil {
 				fmt.Println("Launching Firefox browser...")
@@ -297,37 +312,39 @@ func startPprof() {
 }
 
 func installCA(cfg *config.Config, appDir string) {
-	p := certPath(appDir)
-	if cfg.CAInstall == "never" {
-		logger.Control().Info("CA auto-install disabled")
+	caPolicy := cfg.GetCAInstall()
+	if caPolicy == "never" {
+		logger.Control().Info("CA auto-install disabled by policy (never)")
 		return
 	}
 
-	// systemd units have no TTY. sudo then fails with "需要密码" (and run0
-	// would stall on polkit). Skip; `snirect cert install` is the interactive path.
+	p := certPath(appDir)
+
 	if skipPrivilegedCAInstall() {
 		installed, err := sysproxy.CheckCertStatus(p)
 		if err != nil || !installed {
-			logger.Control().Warn("CA not in system trust store; skipping install under systemd (cannot prompt for sudo). Run once: snirect cert install")
+			logger.Control().Warn("CA not in system trust store; skipping install under systemd")
 		}
 		return
 	}
 
-	if cfg.CAInstall == "always" {
+	// In "always" or "conservative" mode: force install on every startup
+	if caPolicy == "always" || caPolicy == "conservative" {
 		installed, err := sysproxy.ForceInstallCert(p)
 		if err != nil {
 			logger.Control().Warn("CA install failed", "error", err)
 		} else if installed {
-			logger.Control().Info("CA reinstalled")
+			logger.Control().Info("CA installed to system store (policy: always/conservative)")
 		}
 		return
 	}
 
+	// In "auto" mode: install only if not already installed
 	installed, err := sysproxy.InstallCert(p)
 	if err != nil {
 		logger.Control().Warn("CA install failed", "error", err)
 	} else if installed {
-		logger.Control().Info("CA installed")
+		logger.Control().Info("CA installed to system store (policy: auto)")
 	}
 }
 

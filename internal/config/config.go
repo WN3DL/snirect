@@ -3,6 +3,8 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/xihale/snirect/internal/rules"
 )
 
@@ -121,6 +123,8 @@ type ServerConfig struct {
 	Port       int    `toml:"port"`        // Listen port
 	PACHost    string `toml:"pac_host"`    // Hostname for PAC file generation
 	BufferSize int    `toml:"buffer_size"` // Tunnel copy buffer size in bytes (default 65536, min 4096, max 1048576)
+	Mode       string `toml:"mode"`       // Fallback if defined under [server]
+	CAInstall  string `toml:"ca_install"` // Fallback if defined under [server]
 }
 
 // CheckHostnamePolicy returns the parsed certificate verification policy from CheckHostname.
@@ -128,4 +132,30 @@ type ServerConfig struct {
 func (c *Config) CheckHostnamePolicy() rules.CertPolicy {
 	p, _ := rules.ParseCertPolicy(c.CheckHostname)
 	return p
+}
+
+// GetCAInstall returns the normalized CA installation policy.
+func (c *Config) GetCAInstall() string {
+	val := c.CAInstall
+	if val == "" {
+		val = c.Server.CAInstall
+	}
+	val = strings.ToLower(strings.TrimSpace(val))
+	if val == "" {
+		return "conservative"
+	}
+	return val
+}
+
+// GetMode returns the normalized operation mode.
+func (c *Config) GetMode() string {
+	val := c.Mode
+	if val == "" {
+		val = c.Server.Mode
+	}
+	val = strings.ToLower(strings.TrimSpace(val))
+	if val == "" {
+		return "sysproxy"
+	}
+	return val
 }
