@@ -32,13 +32,13 @@ jobs:
 
           # 1. Build Windows amd64 (x86_64)
           mkdir -p build_amd64
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o build_amd64/snirect.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o build_amd64/snirect.exe ./cmd/snirect
           cp rules.json build_amd64/
           (cd build_amd64 && zip -r ../release_assets/snirect-windows-amd64.zip snirect.exe rules.json)
 
           # 2. Build Windows arm64
           mkdir -p build_arm64
-          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o build_arm64/snirect.exe .
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o build_arm64/snirect.exe ./cmd/snirect
           cp rules.json build_arm64/
           (cd build_arm64 && zip -r ../release_assets/snirect-windows-arm64.zip snirect.exe rules.json)
 
