@@ -2,9 +2,11 @@ name: Release CLI (Windows Portable)
 
 on:
   push:
+    branches:
+      - dev          # 提交到 dev 分支自动触发编译
     tags:
-      - "v*"
-  workflow_dispatch: # Allows manual one-click build anytime on GitHub Web UI
+      - "v*"         # 推送发布标签触发
+  workflow_dispatch: # 支持在 GitHub 网页上手动点击按钮触发
 
 permissions:
   contents: write
@@ -23,30 +25,34 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: 'go.mod'
           cache: true
 
       - name: Build Windows Binaries and Package
         run: |
           mkdir -p release_assets
 
-          # 1. Build Windows amd64 (x86_64)
+          # 从原版脚本获取版本号，若无 tag 则为 0.0.0-dev
+          VERSION=$(bash scripts/git_version.sh 'v*' 2>/dev/null || echo "0.0.0-dev")
+          LDFLAGS="-s -w -X github.com/xihale/snirect/internal/cli.Version=${VERSION}"
+
+          # 1. 编译 Windows amd64 (x86_64) - 入口指定为 ./cmd/snirect
           mkdir -p build_amd64
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o build_amd64/snirect.exe ./cmd/snirect
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o build_amd64/snirect.exe ./cmd/snirect
           cp rules.json build_amd64/
           (cd build_amd64 && zip -r ../release_assets/snirect-windows-amd64.zip snirect.exe rules.json)
 
-          # 2. Build Windows arm64
+          # 2. 编译 Windows arm64 - 入口指定为 ./cmd/snirect
           mkdir -p build_arm64
-          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="-s -w" -o build_arm64/snirect.exe ./cmd/snirect
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o build_arm64/snirect.exe ./cmd/snirect
           cp rules.json build_arm64/
           (cd build_arm64 && zip -r ../release_assets/snirect-windows-arm64.zip snirect.exe rules.json)
 
-          # 3. Generate SHA-256 Checksums
+          # 3. 生成 SHA-256 校验和文件
           cd release_assets
           sha256sum *.zip > checksums.txt
 
-      - name: Upload Artifacts (For Manual Runs)
+      - name: Upload Artifacts (For Branch / Manual Runs)
         uses: actions/upload-artifact@v4
         with:
           name: snirect-windows-portable
