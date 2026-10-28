@@ -8,6 +8,13 @@ import (
 
 // Config represents the main configuration for Snirect.
 type Config struct {
+	// Mode specifies the default proxy/cert mode: "sysproxy", "chromium", or "firefox".
+	Mode string `toml:"mode"`
+
+	// Custom executable paths for browser sandbox modes.
+	ChromiumPath string `toml:"chromium_path"`
+	FirefoxPath  string `toml:"firefox_path"`
+
 	// CheckHostname controls certificate hostname verification.
 	// Can be bool, string ("strict", "true", "false"), or []string of allowed hostnames.
 	// Use CheckHostnamePolicy() for type-safe access.
@@ -15,7 +22,7 @@ type Config struct {
 
 	SetProxy bool `toml:"set_proxy"`
 
-	// CAInstall controls the root CA installation policy ("auto", "always", "never").
+	// CAInstall controls the root CA installation policy ("conservative", "auto", "always", "never").
 	CAInstall string `toml:"ca_install"`
 
 	// IPv6 enables or disables IPv6 support.

@@ -6,6 +6,16 @@ const SampleConfigTOML = `# Snirect Configuration File
 # Restart the program for changes to take effect.
 # If an option is commented out, the program will use its internal default value.
 
+# [Default Operation Mode]
+# Mode to use when started with -s/--set-proxy without explicit mode argument.
+# Options: "sysproxy", "chromium", "firefox"
+# mode = "sysproxy"
+
+# [Browser Paths]
+# Optional custom executable paths for browser sandbox modes.
+# chromium_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+# firefox_path = "C:\\Program Files\\Mozilla Firefox\\firefox.exe"
+
 # [Certificate Verification Policy]
 # Controls how Snirect verifies the remote server's certificate.
 # Possible values:
@@ -40,17 +50,19 @@ const SampleConfigTOML = `# Snirect Configuration File
 # [Root CA Installation]
 # Policy for automatically importing and trusting the Snirect Root CA.
 # Options:
-#   "auto"   - (Default) Install only if the CA is not already trusted.
-#   "always" - Force re-installation on every startup.
-#   "never"  - Disable automatic installation completely.
+#   "conservative" - (Default) Ephemeral CA: re-generated on start, deleted on exit.
+#   "auto"         - Persistent CA: install only if missing, kept across restarts.
+#   "always"       - Persistent CA: force reinstall on start.
+#   "never"        - Disable installation completely.
 #
 # 根证书安装策略
 # 是否自动将 Snirect 的根证书导入并信任到系统中。
 # 可选值:
-#   "auto"   - (默认) 仅在未检测到已信任的证书时尝试安装。
-#   "always" - 每次启动都强制尝试重新安装。
+#   "conservative" - (默认) 临时CA：启动时重新生成，退出时删除。
+#   "auto"   - 持久 CA：仅在缺失时安装，重启保留。
+#   "always" - 持久 CA：每次启动都强制尝试重新安装。
 #   "never"  - 禁用自动安装，需手动处理证书信任。
-# ca_install = "auto"
+# ca_install = "conservative"
 
 # [IPv6 Support]
 # Enable or disable IPv6 support for proxy connections.
@@ -384,9 +396,10 @@ function FindProxyForURL(url, host) {
 //
 // PreparsedDefaultConfig contains the compile-time parsed default configuration.
 var PreparsedDefaultConfig = Config{
+	Mode:          "sysproxy",
 	CheckHostname: true,
 	SetProxy:      false,
-	CAInstall:     "auto",
+	CAInstall:     "conservative",
 	IPv6:          false,
 	DNS: DNSConfig{
 		Nameserver:   []string{"https://dnschina1.soraharu.com/dns-query", "tls://223.5.5.5"},

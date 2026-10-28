@@ -102,35 +102,115 @@ func BootstrapProxy(cmd *cobra.Command) (*ProxyEnv, error) {
 	return &ProxyEnv{Cfg: cfg, AppDir: appDir, certMgr: cm, resolver: resolver, Server: srv}, nil
 }
 
-// RunProxy is the entrypoint for the bare `snirect` command. It bootstraps
-// the proxy and blocks until a signal or proxy failure.
+// RunProxy is the entrypoint for the proxy command.
 func RunProxy(cmd *cobra.Command, opts RunOptions) error {
-	env, err := BootstrapProxy(cmd)
+	cfg, appDir, err := loadAppConfig()
 	if err != nil {
 		return err
 	}
-	defer env.Cleanup()
 
-	// Bind the listener synchronously: the real port is known here (no race even
-	// when Config.Server.Port == 0), so PAC/banner can use it immediately.
+	activeMode := cfg.Mode
+	if activeMode == "" {
+		activeMode = "sysproxy"
+	}
+	if setProxyMode != "" && setProxyMode != "default" {
+		activeMode = strings.ToLower(setProxyMode)
+	}
+
+	// Check and handle residuals before doing anything
+	if err := PromptAndCleanResiduals(appDir, activeMode, forceClean); err != nil {
+		return err
+	}
+
+	cd := certDir(appDir)
+	if err := os.MkdirAll(cd, 0o700); err != nil {
+		return fmt.Errorf("failed to create cert dir: %w", err)
+	}
+
+	setupLogging(cfg, cmd)
+	startPprof()
+
+	r, err := rules.LoadRules()
+	if err != nil {
+		logger.Control().Warn("failed to load rules", "error", err)
+	}
+
+	// Clean local CA directory if in conservative mode
+	if cfg.CAInstall == "conservative" {
+		_ = os.RemoveAll(cd)
+		_ = os.MkdirAll(cd, 0o700)
+	}
+
+	cm, err := cert.NewCertificateManager(certPath(appDir), filepath.Join(cd, "root.key"))
+	if err != nil {
+		return fmt.Errorf("failed to initialize CA: %w", err)
+	}
+
+	// Write SPKI hash for Chromium
+	spkiHash, err := cm.GetSPKIHash()
+	if err == nil {
+		_ = os.WriteFile(filepath.Join(appDir, "spki_hash.txt"), []byte(spkiHash), 0644)
+	}
+
+	resolver := dns.NewResolver(cfg, r)
+	srv := proxy.NewProxyServer(cfg, r, cm, resolver)
+
+	env := &ProxyEnv{Cfg: cfg, AppDir: appDir, certMgr: cm, resolver: resolver, Server: srv}
+
+	// Defer cleanup hook
+	defer func() {
+		logger.Control().Info("shutting down and cleaning certificate environment")
+		env.Cleanup()
+		if cfg.CAInstall == "conservative" {
+			CleanAllResiduals(appDir, activeMode)
+		}
+	}()
+
 	if err := env.Server.Listen(); err != nil {
 		return err
 	}
 	port := env.Cfg.Server.Port
 
-	if shouldSetProxy(cmd, env.Cfg) {
-		sysproxy.SetPAC(pacURL("127.0.0.1", port))
-		env.pacSet = true
+	// Apply mode
+	if setProxyMode != "" {
+		switch activeMode {
+		case "sysproxy":
+			installCA(cfg, appDir)
+			sysproxy.SetPAC(pacURL("127.0.0.1", port))
+			env.pacSet = true
+			fmt.Printf("System proxy mode active. PAC set to port %d\n", port)
+		case "chromium":
+			binPath, err := FindChromiumPath(resolveChromiumPath(cfg))
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Launching Chromium browser with SPKI sandbox (hash: %s)...\n", spkiHash)
+			if _, err := LaunchChromium(binPath, port, spkiHash, appDir); err != nil {
+				return err
+			}
+		case "firefox":
+			if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
+				logger.Control().Warn("failed to install cert to Firefox profiles", "error", err)
+			}
+			binPath, err := FindFirefoxPath(resolveFirefoxPath(cfg))
+			if err == nil {
+				fmt.Println("Launching Firefox browser...")
+				_, _ = LaunchFirefox(binPath)
+			} else {
+				fmt.Println("Firefox cert installed. Manual browser configuration required.")
+			}
+		default:
+			return fmt.Errorf("unsupported mode: %s (choose sysproxy, chromium, or firefox)", activeMode)
+		}
 	}
+
 	if opts.OnReady != nil {
 		opts.OnReady(port)
 	}
 
-	// Serve in the background; report its outcome on proxyErr.
 	proxyErr := make(chan error, 1)
 	go func() { proxyErr <- env.Server.Serve() }()
 
-	// Block until a signal or the proxy fails.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
@@ -139,14 +219,27 @@ func RunProxy(cmd *cobra.Command, opts RunOptions) error {
 	case err := <-proxyErr:
 		runErr = fmt.Errorf("proxy failed: %w", err)
 	case <-sig:
-		logger.Control().Info("shutting down")
+		logger.Control().Info("received termination signal")
 	}
 
-	// Centralized teardown. Shutdown is a safe no-op on an already-stopped server.
-	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+	sctx, scancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer scancel()
 	_ = env.Server.Shutdown(sctx)
 	return runErr
+}
+
+func resolveChromiumPath(cfg *config.Config) string {
+	if chromiumPathFlag != "" {
+		return chromiumPathFlag
+	}
+	return cfg.ChromiumPath
+}
+
+func resolveFirefoxPath(cfg *config.Config) string {
+	if firefoxPathFlag != "" {
+		return firefoxPathFlag
+	}
+	return cfg.FirefoxPath
 }
 
 func setupLogging(cfg *config.Config, cmd *cobra.Command) {

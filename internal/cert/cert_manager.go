@@ -8,7 +8,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"crypto/sha256"
 	"encoding/pem"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/big"
@@ -275,4 +277,18 @@ func (cm *CertificateManager) cleanupRoutine() {
 			})
 		}
 	}
+}
+
+// GetSPKIHash returns the base64-encoded SHA-256 hash of the Subject Public Key Info (SPKI).
+// Used by Chromium's --ignore-certificate-errors-spki-list flag.
+func (cm *CertificateManager) GetSPKIHash() (string, error) {
+	if cm.RootCert == nil {
+		return "", errors.New("root certificate is not initialized")
+	}
+	der, err := x509.MarshalPKIXPublicKey(cm.RootCert.PublicKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal public key to PKIX DER: %w", err)
+	}
+	h := sha256.Sum256(der)
+	return base64.StdEncoding.EncodeToString(h[:]), nil
 }

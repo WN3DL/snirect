@@ -26,7 +26,11 @@ var firefoxInstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err := sysproxy.InstallFirefoxCert(certPath(appDir)); err != nil {
+		cp := certPath(appDir)
+		if _, err := os.Stat(cp); os.IsNotExist(err) {
+			return fmt.Errorf("certificate file not found: %s\nPlease run 'snirect -s' first to generate certificates", cp)
+		}
+		if err := sysproxy.InstallFirefoxCert(cp); err != nil {
 			return fmt.Errorf("install failed: %w\n\nEnsure certutil is installed and Firefox is closed", err)
 		}
 		fmt.Println("Certificate installed to Firefox. Restart Firefox to apply.")
