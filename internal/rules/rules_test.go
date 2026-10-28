@@ -130,8 +130,8 @@ func TestLoadRules_GitHubEdgePins(t *testing.T) {
 // below are the replacements validated live on 2026-10-28: the Google GFE
 // answers SNI g.cn with the *.google.cn leaf (SANs include g.cn) while serving
 // the original Host, the Telegram DC IP answers every *.telegram.org host on
-// empty SNI, and Valve's front answers store.steampowered.com on empty SNI with
-// its DigiCert leaf (SANs cover store + steamcommunity).
+// empty SNI, and the Akamai store edge answers store.steampowered.com on empty
+// SNI while geo-routing the storefront per client IP.
 func TestLoadRules_FrontPinRefresh(t *testing.T) {
 	r, err := LoadRules()
 	if err != nil {
@@ -147,7 +147,7 @@ func TestLoadRules_FrontPinRefresh(t *testing.T) {
 		{"web.telegram.org", "", "149.154.166.110"},
 		{"t.me", "", "149.154.166.110"},
 		{"telegram.me", "", "149.154.166.110"},
-		{"store.steampowered.com", "", "184.50.187.66"},
+		{"store.steampowered.com", "", "23.217.182.113"},
 		{"steamcommunity.com", "", "184.50.187.66"},
 		// Synced from Cealing-Host 1.1.4.53: YouTube's video CDN is SNI-stripped
 		// with no host pin, like the pixiv/fanbox front.

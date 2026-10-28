@@ -554,12 +554,16 @@ var builtinRules = &Rules{
 		"status.docker.io":                     "elb-io.us-east-1.aws.dckr.io",
 		// Upstream's 23.39.61.133 store front is dead: TCP opens but the empty-SNI
 		// handshake aborts (remote error: tls: internal error, probed 2026-10-28).
-		// 184.50.187.66 — the same Valve front upstream already pins for
-		// *steamcommunity.com — answers store.steampowered.com on empty SNI with
-		// Valve's DigiCert leaf (SANs cover store/api/help/login/partner/
-		// steamcommunity/support + www.valvesoftware.com; valid to 2027-02) and
-		// returns 200 from a Tencent Cloud GZ VPS.
-		"store.steampowered.com": "184.50.187.66",
+		// 184.50.187.66 (the Valve front pinned for *steamcommunity.com) does
+		// answer store on empty SNI, but it is Valve's China POP: it serves the
+		// CN storefront — CNY prices and store.cdn.queniuqe.com assets — to every
+		// client regardless of egress IP, so a non-CN user would silently get a
+		// foreign storefront. 23.217.182.113 is an Akamai edge that geo-routes
+		// per client IP: CN clients get CNY + queniuqe, other egress gets the
+		// global storefront (verified 2026-10-28: prices and CDN hosts match the
+		// unpinned direct fetch). Leaf is Let's Encrypt CN=store.steampowered.com
+		// (valid to 2027-01); 200 on empty SNI from both a JP and a CN egress.
+		"store.steampowered.com": "23.217.182.113",
 		"support.github.com":     "185.199.108.133",
 		"t.me":                   "149.154.166.110",
 		"telegram.me":            "149.154.166.110",
