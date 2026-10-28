@@ -1,6 +1,10 @@
 package rules
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -35,17 +39,40 @@ func MatchHost(pattern, host string) bool {
 	}
 }
 
-// LoadRules returns the compile-time built-in rules.
-//
-// builtinRules is a package-level value whose maps are hand-maintained in
-// builtin_rules.go. We rebuild the pre-sorted key indexes here so the maps are
-// the single source of truth — hand-syncing parallel sorted slices silently
-// breaks pattern matching (a map entry without a matching key in the slice is
-// invisible to GetCertVerify/GetAlterHostname/GetHost). All Rules accessors
-// take a read lock, so the single shared instance is safe to hand out.
+// GetRulesPath returns the default physical path to rules.json next to the executable.
+func GetRulesPath() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "rules.json"
+	}
+	return filepath.Join(filepath.Dir(exePath), "rules.json")
+}
+
+// LoadRules dynamically loads rules.json from the application directory.
+// If the file does not exist, it returns an initialized empty Rules instance and an error.
 func LoadRules() (*Rules, error) {
-	builtinRules.Init()
-	return builtinRules, nil
+	return LoadRulesFromPath(GetRulesPath())
+}
+
+// LoadRulesFromPath loads and parses rules from the given file path.
+func LoadRulesFromPath(path string) (*Rules, error) {
+	r := NewRules()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		r.Init()
+		if os.IsNotExist(err) {
+			return r, fmt.Errorf("rules.json not found in application directory: %s", path)
+		}
+		return r, fmt.Errorf("failed to read rules file %s: %w", path, err)
+	}
+
+	if err := json.Unmarshal(data, r); err != nil {
+		r.Init()
+		return r, fmt.Errorf("failed to parse rules file %s: %w", path, err)
+	}
+
+	r.Init()
+	return r, nil
 }
 
 // Rules represents all rules for SNI spoofing and certificate handling.
@@ -53,16 +80,16 @@ type Rules struct {
 	mu sync.RWMutex
 
 	// SNI alteration rules: pattern -> target SNI
-	AlterHostname map[string]string
+	AlterHostname map[string]string `json:"alter_hostname"`
 
 	// Certificate verification rules: pattern -> policy
-	CertVerify map[string]interface{}
+	CertVerify map[string]interface{} `json:"cert_verify"`
 
 	// Static hosts mapping: pattern -> IP
-	Hosts map[string]string
+	Hosts map[string]string `json:"hosts"`
 
 	// Ignore certificate expiry: pattern -> bool
-	IgnoreExpiry map[string]bool
+	IgnoreExpiry map[string]bool `json:"ignore_expiry"`
 
 	// Pre-computed sorted keys for efficient matching
 	alterHostnameKeys []string

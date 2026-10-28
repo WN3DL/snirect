@@ -65,10 +65,10 @@ func ensureFile(path, content string, force bool) error {
 
 // GetAppDataDir returns the application data directory.
 func GetAppDataDir() (string, error) {
-	configDir, err := os.UserConfigDir()
+	exePath, err := os.Executable()
 	if err != nil {
-		return "", err
+		return ".", nil
 	}
-	appDir := filepath.Join(configDir, "snirect")
+	appDir := filepath.Dir(exePath)
 	return appDir, nil
 }
