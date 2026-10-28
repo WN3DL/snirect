@@ -121,15 +121,18 @@ func TestLoadRules_GitHubEdgePins(t *testing.T) {
 	}
 }
 
-// TestLoadRules_GoogleTelegramFrontPins is the regression guard for the
-// domain-fronted Google and Telegram rule families. Both upstream fronts died
-// (183.56.143.147 retired → 443 refused; 45.192.12.153 now a Traefik default
-// cert), which took every google.com/gstatic/youtube/telegram.org host down
-// with a dial or handshake failure. The pins below are the replacements
-// validated live on 2026-10-28: the Google GFE answers SNI g.cn with the
-// *.google.cn leaf (SANs include g.cn) while serving the original Host, and
-// the Telegram DC IP answers every *.telegram.org host on empty SNI.
-func TestLoadRules_GoogleTelegramFrontPins(t *testing.T) {
+// TestLoadRules_FrontPinRefresh is the regression guard for the domain-fronted
+// rule families whose upstream pin died. Three fronts were retired between
+// Cealing-Host 1.1.4.53 and 2026-10-28 (183.56.143.147 → 443 refused,
+// 45.192.12.153 → Traefik default cert, 23.39.61.133 → empty-SNI handshake
+// aborts), which took every google.com/gstatic/youtube/telegram.org and
+// store.steampowered.com host down with a dial or handshake failure. The pins
+// below are the replacements validated live on 2026-10-28: the Google GFE
+// answers SNI g.cn with the *.google.cn leaf (SANs include g.cn) while serving
+// the original Host, the Telegram DC IP answers every *.telegram.org host on
+// empty SNI, and Valve's front answers store.steampowered.com on empty SNI with
+// its DigiCert leaf (SANs cover store + steamcommunity).
+func TestLoadRules_FrontPinRefresh(t *testing.T) {
 	r, err := LoadRules()
 	if err != nil {
 		t.Fatalf("LoadRules() error = %v", err)
@@ -144,6 +147,8 @@ func TestLoadRules_GoogleTelegramFrontPins(t *testing.T) {
 		{"web.telegram.org", "", "149.154.166.110"},
 		{"t.me", "", "149.154.166.110"},
 		{"telegram.me", "", "149.154.166.110"},
+		{"store.steampowered.com", "", "184.50.187.66"},
+		{"steamcommunity.com", "", "184.50.187.66"},
 		// Synced from Cealing-Host 1.1.4.53: YouTube's video CDN is SNI-stripped
 		// with no host pin, like the pixiv/fanbox front.
 		{"r1---sn-4g5e6nez.googlevideo.com", "", ""},

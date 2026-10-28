@@ -552,11 +552,18 @@ var builtinRules = &Rules{
 		"sp.nicovideo.jp":                      "3.167.200.113",
 		"sso.proton.me":                        "185.70.42.20",
 		"status.docker.io":                     "elb-io.us-east-1.aws.dckr.io",
-		"store.steampowered.com":               "23.39.61.133",
-		"support.github.com":                   "185.199.108.133",
-		"t.me":                                 "149.154.166.110",
-		"telegram.me":                          "149.154.166.110",
-		"upld.e-hentai.org":                    "89.149.221.236",
+		// Upstream's 23.39.61.133 store front is dead: TCP opens but the empty-SNI
+		// handshake aborts (remote error: tls: internal error, probed 2026-10-28).
+		// 184.50.187.66 — the same Valve front upstream already pins for
+		// *steamcommunity.com — answers store.steampowered.com on empty SNI with
+		// Valve's DigiCert leaf (SANs cover store/api/help/login/partner/
+		// steamcommunity/support + www.valvesoftware.com; valid to 2027-02) and
+		// returns 200 from a Tencent Cloud GZ VPS.
+		"store.steampowered.com": "184.50.187.66",
+		"support.github.com":     "185.199.108.133",
+		"t.me":                   "149.154.166.110",
+		"telegram.me":            "149.154.166.110",
+		"upld.e-hentai.org":      "89.149.221.236",
 		// snirect-specific: upload.github.com has no public A record (GitHub
 		// removed it from DNS; only the 302 from github.com/git-receive-pack
 		// references it). Falling through to the *github.com web edge gets a
