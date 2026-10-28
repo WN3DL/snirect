@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -318,7 +319,7 @@ func skipPrivilegedCAInstall() bool {
 
 func shouldSetProxy(cmd *cobra.Command, cfg *config.Config) bool {
 	if cmd.Flags().Changed("set-proxy") {
-		return setProxy
+		return setProxyMode != ""
 	}
 	return cfg.SetProxy
 }
